@@ -1,0 +1,54 @@
+# ============================================================
+#Licensed to the Apache Software Foundation (ASF) under one
+#or more contributor license agreements.  See the NOTICE file
+#distributed with this work for additional information
+#regarding copyright ownership.  The ASF licenses this file
+#to you under the Apache License, Version 2.0 (the
+#"License"); you may not use this file except in compliance
+#with the License.  You may obtain a copy of the License at
+
+#    http://www.apache.org/licenses/LICENSE-2.0
+
+#Unless required by applicable law or agreed to in writing, software
+#distributed under the License is distributed on an "AS IS" BASIS,
+#WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#See the License for the specific language governing permissions and
+#limitations under the License.
+# ============================================================
+
+# --- Python bytecode ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- 가상환경/패키지 캐시 ---
+.venv/
+venv/
+ENV/
+.conda/
+__pypackages__/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# --- OS 잡파일 ---
+.DS_Store
+Thumbs.db
+
+# --- IDE ---
+.vscode/
+.idea/
+
+# --- 로그/생성물 ---
+logs/*
+!logs/.gitkeep
+
+# --- 비밀키/로컬 설정 ---
+.env.local
+!.env.example
+#커밋
+
+# --- 사용자 기억 ---
+art_brain.pkl
+user_profiles.json

@@ -1,0 +1,78 @@
+# ============================================================
+#Licensed to the Apache Software Foundation (ASF) under one
+#or more contributor license agreements.  See the NOTICE file
+#distributed with this work for additional information
+#regarding copyright ownership.  The ASF licenses this file
+#to you under the Apache License, Version 2.0 (the
+#"License"); you may not use this file except in compliance
+#with the License.  You may obtain a copy of the License at
+
+#    http://www.apache.org/licenses/LICENSE-2.0
+
+#Unless required by applicable law or agreed to in writing, software
+#distributed under the License is distributed on an "AS IS" BASIS,
+#WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#See the License for the specific language governing permissions and
+#limitations under the License.
+# ============================================================
+
+# ============================================================
+# moti robotics - Python deps (Windows / macOS)
+#
+# 🔧 Quickstart (No venv)
+# 1) Python 3.11 설치 확인
+#    - Windows (PowerShell):  py -3.11 --version
+#    - macOS (Terminal):      python3 --version
+# 2) pip 업그레이드
+#    - Windows:  py -3.11 -m pip install -U pip wheel
+#    - macOS:    python3 -m pip install -U pip wheel
+# 3) 의존성 설치 (가상환경 없이 사용자 홈에 설치)
+#    - Windows:  py -3.11 -m pip install --user -r requirements.txt
+#    - macOS:    python3 -m pip install --user -r requirements.txt
+# 4) .env.local 작성 (GOOGLE_API_KEY, TYPECAST_API_KEY, DXL_PORT 등)
+#
+# 💻 OS별 참고
+# - Windows: SAPI를 쓰려면 .env에서 TTS_ENGINE=sapi 설정 (pywin32는 자동 분기 설치).
+# - macOS: SAPI 미지원 → TTS_ENGINE=typecast 권장/기본. 마이크/손쉬운 사용 권한 필요.
+#
+# 🪟 OpenCV GUI가 필요 없으면(서버/원격) 아래 'opencv-python' 줄을 주석 처리하고
+#    'opencv-python-headless' 줄의 주석을 해제하세요.
+#
+# 🧰 트러블슈팅
+# - (macOS) sounddevice 설치 실패 시:
+#     xcode-select --install
+#     # 필요하면: brew install portaudio
+#     # 그리고 재시도: python3 -m pip install --no-binary=:all: sounddevice
+# - (Apple Silicon) 특정 휠 설치 문제 시:
+#     python3 -m pip install --only-binary=:all: mediapipe
+# - (PATH 경고) 가상환경이 아니면 pip가 사용자 폴더에 설치합니다.
+#   설치 후 실행이 안 되면, pip가 알려준 경로를 PATH에 추가하세요.
+# ============================================================
+
+# ----- Core (로봇 구동) -----
+numpy
+opencv-python          # (GUI 창 필요 시 기본)  ← GUI 불필요하면 아래 줄 사용
+# opencv-python-headless
+mediapipe
+dynamixel-sdk
+pynput
+
+# ----- PTT / 음성 / 환경설정 -----
+sounddevice
+google-generativeai
+python-dotenv
+requests
+
+# ----- Windows SAPI TTS용 COM (Windows에서만 설치됨) -----
+pywin32; platform_system=="Windows"
+
+# ----- Moti-Face 추가 의존성 -----
+pygame
+pvporcupine
+Pyaudion 
+
+# ----- serial port 탐색 -----
+pyserial
+
+# ----- 자막 -----
+screeninfo
