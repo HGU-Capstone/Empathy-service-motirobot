@@ -1,2 +1,0 @@
-Code of Conduct는 HSF 규정(https://hsf.hanqdong.edu/_pages/community)을 따릅니다.
-The Code of Conduct follows the HSF regulations (https://hsf.hanqdong.edu/_pages/community).

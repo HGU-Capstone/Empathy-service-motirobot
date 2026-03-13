@@ -1,5 +1,4 @@
 # function/face.py
-
 from __future__ import annotations
 import os
 import threading
@@ -45,9 +44,9 @@ def _as_int(v, default=None):
 def _can_show_window_in_this_thread() -> bool:
     return not (_IS_DARWIN and threading.current_thread() is not threading.main_thread())
 
+# 파라미터에서 sleepy_event 삭제 완료
 def face_tracker_worker(port: PortHandler, pkt: PacketHandler, lock: threading.Lock,
                           stop_event: threading.Event, video_frame_q: queue.Queue,
-                          sleepy_event: threading.Event,
                           shared_state: dict,
                           mouth_event_queue: queue.Queue | None = None,
                           camera_index: int = 1,
@@ -152,11 +151,7 @@ def face_tracker_worker(port: PortHandler, pkt: PacketHandler, lock: threading.L
         return 0.0
 
     last_recog_time = 0
-    
-    # ▼▼▼ [수정] 인식 주기를 0.5초로 단축하여 반응성 향상 ▼▼▼
     RECOG_INTERVAL = 0.5 
-    # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
-
     is_initial_recognition_active = True
 
     try:
@@ -181,8 +176,9 @@ def face_tracker_worker(port: PortHandler, pkt: PacketHandler, lock: threading.L
             
             current_mode = shared_state.get('mode', 'tracking')
 
-            if brain and not sleepy_event.is_set():
-                cur_time = time.time() # 현재 시간
+            # sleepy_event 로직 삭제됨. 항상 뇌가 인식하도록 변경.
+            if brain:
+                cur_time = time.time()
                 
                 force_learning = shared_state.get('force_learning', False)
                 target_name = shared_state.get('learning_target_name', None)
@@ -197,31 +193,24 @@ def face_tracker_worker(port: PortHandler, pkt: PacketHandler, lock: threading.L
 
                 if is_recognition_needed and (cur_time - last_recog_time >= RECOG_INTERVAL):
                     
-                    last_recog_time = cur_time # 마지막 실행 시간 갱신
+                    last_recog_time = cur_time
                     
                     recog_frame = frame.copy()
                     emb, name = brain.recognize_face(recog_frame)
                     
                     if emb is not None:
-                        # 얼굴이 감지됨
                         shared_state['current_face_embedding'] = emb
                         
                         if is_initial_recognition_active:
-                            # ▼▼▼ [중요 수정] Unknown이어도 업데이트해야 gemini_api가 반응함! ▼▼▼
                             if name not in [None, "Thinking..."]:
                                 shared_state['detected_user'] = name 
-                            # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
                         
-                        # (로그 출력)
                         if not force_learning and print_debug and name != "Thinking...":
                             print(f"👤 [ART 인식] detected_user: {shared_state.get('detected_user')}, 결과: {name}")
                     else:
-                        # 얼굴이 감지되지 않음 (벽, 허공 등)
                         shared_state['current_face_embedding'] = None
                         if is_initial_recognition_active:
-                            # ▼▼▼ [수정] 아무도 없으면 None으로 설정 (유령 인식 방지) ▼▼▼
                             shared_state['detected_user'] = None
-                            # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
                         
                     if force_learning and emb is not None and target_name:
                         msg = brain.register_face(emb, target_name)
@@ -238,7 +227,6 @@ def face_tracker_worker(port: PortHandler, pkt: PacketHandler, lock: threading.L
             res = landmarker.detect_for_video(mp_image, frame_timestamp_ms)
             
             if mouth_event_queue and res.face_blendshapes and res.face_blendshapes[0]:
-                # (기존 입모양 인식 로직 유지)
                 bs = res.face_blendshapes[0]
                 mouth_open_score = get_blendshape_score(bs, 'jawOpen')
                 debug_counter += 1
@@ -264,112 +252,69 @@ def face_tracker_worker(port: PortHandler, pkt: PacketHandler, lock: threading.L
 
             current_mode = shared_state.get('mode', 'tracking')
 
+            # 모드 변경 감지 로직 최소화 (ox_quiz 삭제)
             if current_mode != last_mode:
-                # (기존 모드 변경 로직 유지)
-                if current_mode == 'ox_quiz':
-                    print("▶ Mode changed to OX_QUIZ: Resetting motor position.")
-                    pan_pos, tilt_pos = home_pan_pos, home_tilt_pos
-                    with lock:
-                        io.write4(pkt, port, C.PAN_ID, C.ADDR_GOAL_POSITION, pan_pos)
-                        io.write4(pkt, port, C.TILT_ID, C.ADDR_GOAL_POSITION, tilt_pos)
-                    last_sent_pan, last_sent_tilt = pan_pos, tilt_pos
-                
-                elif current_mode == 'tracking':
+                if current_mode == 'tracking':
                     print("▶ Mode changed to Tracking: Re-reading current motor position.")
                     pan_pos = read_pos(C.PAN_ID)
                     tilt_pos = read_pos(C.TILT_ID)
                     last_sent_pan, last_sent_tilt = pan_pos, tilt_pos
                 last_mode = current_mode
 
+            # 수면 중지 로직 삭제: 무조건 추적합니다.
             if current_mode == 'tracking':
-                if not sleepy_event.is_set():
-                    if res.face_landmarks:
-                        lm = res.face_landmarks[0][1] # 코 끝 좌표
-                        raw_nx, raw_ny = int(lm.x * w), int(lm.y * h)
-
-                        # ============================================================
-                        #        ↓↓↓ [설정] 좌표 스무딩 적용 ↓↓↓
-                        # ============================================================
-                        smooth_nx = int(raw_nx * SMOOTH_FACTOR + smooth_nx * (1 - SMOOTH_FACTOR))
-                        smooth_ny = int(raw_ny * SMOOTH_FACTOR + smooth_ny * (1 - SMOOTH_FACTOR))
-                        
-                        nx, ny = smooth_nx, smooth_ny 
-                        # ============================================================
-
-                        error_pan = nx - cx
-                        error_tilt = cy - ny
-
-                        if abs(error_pan) > C.DEAD_ZONE or abs(error_tilt) > C.DEAD_ZONE:
-                            integral_pan += error_pan
-                            integral_tilt += error_tilt
-                            integral_pan = io.clamp(integral_pan, -200, 200)
-                            integral_tilt = io.clamp(integral_tilt, -200, 200)
-                            derivative_pan = error_pan - last_error_pan
-                            derivative_tilt = error_tilt - last_error_tilt
-                            
-                            pan_delta = (error_pan * C.KP_PAN) + (integral_pan * C.KI_PAN) + (derivative_pan * C.KD_PAN)
-                            tilt_delta = (error_tilt * C.KP_TILT) + (integral_tilt * C.KI_TILT) + (derivative_tilt * C.KD_TILT)
-                        else:
-                            pan_delta, tilt_delta = 0, 0
-                            integral_pan, integral_tilt = 0, 0
-
-                        last_error_pan = error_pan
-                        last_error_tilt = error_tilt
-                        
-                        pan_pos  = int(io.clamp(pan_pos  + C.PAN_SIGN  * pan_delta,  C.SERVO_MIN, C.SERVO_MAX))
-                        tilt_pos = int(io.clamp(tilt_pos + C.TILT_SIGN * tilt_delta, C.SERVO_MIN, C.TILT_POS_MAX))
-
-                        # ============================================================
-                        #        ↓↓↓ [설정] 최소 이동 임계값 조정 ↓↓↓
-                        # ============================================================
-                        move_threshold = 1 
-                        
-                        should_move_pan = abs(pan_pos - last_sent_pan) > move_threshold
-                        should_move_tilt = abs(tilt_pos - last_sent_tilt) > move_threshold
-
-                        if should_move_pan or should_move_tilt:
-                            with lock:
-                                if should_move_pan:
-                                    io.write4(pkt, port, C.PAN_ID, C.ADDR_GOAL_POSITION, pan_pos)
-                                    last_sent_pan = pan_pos
-                                
-                                if should_move_tilt:
-                                    io.write4(pkt, port, C.TILT_ID, C.ADDR_GOAL_POSITION, tilt_pos)
-                                    last_sent_tilt = tilt_pos
-                        # ============================================================
-
-                        cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
-                        cv2.circle(frame, (nx, ny), 5, (0, 0, 255), -1) # 부드러운 좌표 표시
-                        # 원본 좌표도 옅게 표시 (디버깅용)
-                        cv2.circle(frame, (raw_nx, raw_ny), 3, (0, 255, 255), -1) 
-                        cv2.putText(frame, "Mode: Tracking (Smooth)", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
-                else:
-                    cv2.putText(frame, "Mode: Tracking (Sleepy)", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (128, 128, 128), 2)
-            
-            elif current_mode == 'ox_quiz':
-                # (OX 퀴즈 로직 유지)
-                left_count, right_count = 0, 0
                 if res.face_landmarks:
-                    for face_landmarks in res.face_landmarks:
-                        nose_landmark = face_landmarks[1]
-                        face_x_position = int(nose_landmark.x * w)
-                        if face_x_position < cx:
-                            left_count += 1
-                        else:
-                            right_count += 1
+                    lm = res.face_landmarks[0][1] # 코 끝 좌표
+                    raw_nx, raw_ny = int(lm.x * w), int(lm.y * h)
 
-                cv2.line(frame, (cx, 0), (cx, h), (255, 255, 255), 3)
-                cv2.putText(frame, "X", (40, 80), cv2.FONT_HERSHEY_TRIPLEX, 3, (0, 0, 255), 7)
-                cv2.putText(frame, f": {left_count}", (160, 80), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 0, 255), 7)
-                cv2.putText(frame, "O", (w - 250, 80), cv2.FONT_HERSHEY_TRIPLEX, 3, (0, 255, 0), 7)
-                cv2.putText(frame, f": {right_count}", (w - 130, 80), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 255, 0), 7)
-                
-                total_faces = left_count + right_count
-                count_text = f"Total: {total_faces}"
-                text_size = cv2.getTextSize(count_text, cv2.FONT_HERSHEY_SIMPLEX, 1.2, 3)[0]
-                text_x = w - text_size[0] - 20
-                text_y = h - 30
-                cv2.putText(frame, count_text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
+                    # 좌표 스무딩
+                    smooth_nx = int(raw_nx * SMOOTH_FACTOR + smooth_nx * (1 - SMOOTH_FACTOR))
+                    smooth_ny = int(raw_ny * SMOOTH_FACTOR + smooth_ny * (1 - SMOOTH_FACTOR))
+                    
+                    nx, ny = smooth_nx, smooth_ny 
+
+                    error_pan = nx - cx
+                    error_tilt = cy - ny
+
+                    if abs(error_pan) > C.DEAD_ZONE or abs(error_tilt) > C.DEAD_ZONE:
+                        integral_pan += error_pan
+                        integral_tilt += error_tilt
+                        integral_pan = io.clamp(integral_pan, -200, 200)
+                        integral_tilt = io.clamp(integral_tilt, -200, 200)
+                        derivative_pan = error_pan - last_error_pan
+                        derivative_tilt = error_tilt - last_error_tilt
+                        
+                        pan_delta = (error_pan * C.KP_PAN) + (integral_pan * C.KI_PAN) + (derivative_pan * C.KD_PAN)
+                        tilt_delta = (error_tilt * C.KP_TILT) + (integral_tilt * C.KI_TILT) + (derivative_tilt * C.KD_TILT)
+                    else:
+                        pan_delta, tilt_delta = 0, 0
+                        integral_pan, integral_tilt = 0, 0
+
+                    last_error_pan = error_pan
+                    last_error_tilt = error_tilt
+                    
+                    pan_pos  = int(io.clamp(pan_pos  + C.PAN_SIGN  * pan_delta,  C.SERVO_MIN, C.SERVO_MAX))
+                    tilt_pos = int(io.clamp(tilt_pos + C.TILT_SIGN * tilt_delta, C.SERVO_MIN, C.TILT_POS_MAX))
+
+                    move_threshold = 1 
+                    
+                    should_move_pan = abs(pan_pos - last_sent_pan) > move_threshold
+                    should_move_tilt = abs(tilt_pos - last_sent_tilt) > move_threshold
+
+                    if should_move_pan or should_move_tilt:
+                        with lock:
+                            if should_move_pan:
+                                io.write4(pkt, port, C.PAN_ID, C.ADDR_GOAL_POSITION, pan_pos)
+                                last_sent_pan = pan_pos
+                            
+                            if should_move_tilt:
+                                io.write4(pkt, port, C.TILT_ID, C.ADDR_GOAL_POSITION, tilt_pos)
+                                last_sent_tilt = tilt_pos
+
+                    cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
+                    cv2.circle(frame, (nx, ny), 5, (0, 0, 255), -1) 
+                    cv2.circle(frame, (raw_nx, raw_ny), 3, (0, 255, 255), -1) 
+                    cv2.putText(frame, "Mode: Tracking (Smooth)", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
 
             if draw_mesh and res.face_landmarks:
                 for landmark_list in res.face_landmarks:
@@ -385,9 +330,6 @@ def face_tracker_worker(port: PortHandler, pkt: PacketHandler, lock: threading.L
             _publish_frame(frame)
 
     finally:
-        # ============================================================
-        #         ↓↓↓ [추가] 모터 설정을 기본값으로 초기화 ↓↓↓
-        # ============================================================
         print(f"🤖 추적 모터(Pan/Tilt) 설정 초기화 (가속도 0, 속도 100)...")
         try:
             with lock:
