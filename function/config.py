@@ -1,7 +1,5 @@
 # function/config.py
-
 import os
-import platform
 try:
     import serial.tools.list_ports
 except ImportError:
@@ -46,9 +44,8 @@ def find_dxl_port() -> str | None:
 
     return dxl_port
 
-# ---- 기본 HW ----
-_IS_WINDOWS = (platform.system() == "Windows")
-_DEFAULT_PORT = "COM3" if _IS_WINDOWS else "/dev/tty.usbmodemXXXX"
+# ---- 기본 HW (Windows 전용) ----
+_DEFAULT_PORT = "COM3"
 
 MANUAL_PORT = os.getenv("DXL_PORT")
 if MANUAL_PORT:
@@ -87,7 +84,6 @@ def rpm_to_unit(rpm: float) -> int:
 
 BASE_SPEED_UNITS = rpm_to_unit(BASE_RPM)
 TURN_SPEED_UNITS = rpm_to_unit(TURN_RPM)
-
 
 # ---- 사용하지 않는 관절 모터 ID (안전 종료 시 토크 해제용) ----
 # 기능은 삭제되었지만, 물리적으로 연결된 모터들이 뻗대지 않도록 ID만 남겨둡니다.

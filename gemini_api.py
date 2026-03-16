@@ -9,7 +9,6 @@ import base64
 import queue
 import threading
 import wave
-import platform
 import random
 import time
 import re 
@@ -18,7 +17,6 @@ from datetime import datetime
 from typing import Optional, Callable
 import multiprocessing
 
-# 사용하지 않는 entertain, present 임포트 삭제 완료
 from function.profile_manager import ProfileManager
 from function.utils import _get_relative_time_str, _extract_text, _get_env, SYSTEM_INSTRUCTION
 
@@ -41,7 +39,6 @@ from pynput import keyboard
 import google.generativeai as genai
 import requests
 
-IS_WINDOWS = (platform.system() == "Windows")
 PROFILE_DB_FILE = "user_profiles.json"
 
 def _find_input_device_by_name(name_substr: str) -> int | None:
@@ -61,20 +58,6 @@ CHANNELS = int(_get_env("CHANNELS", "1"))
 DTYPE = _get_env("DTYPE", "int16")
 MODEL_NAME = _get_env("MODEL_NAME", "gemini-3.1-flash-lite-preview")
 
-# 물리 액션 및 게임 관련 의도 싹 삭제
-ONE_SHOT_PROMPT = (
-    "이 오디오를 전사하고 의도를 분류하며, 다음 의도 가이드라인을 따르세요.\n"
-    "1. 'introduction': 사용자가 이름을 말할 때. (name 필드에 이름 추출)\n"
-    "그 외 일상 대화는 'chat'으로 분류하세요.\n"
-    "답변(reply)은 1~2문장으로 다정하고 따뜻하게 작성하세요.\n"
-    "반드시 다음 JSON 형식으로만 출력하세요: "
-    '{"text": "전사된 텍스트", "intent": "의도", "reply": "답변", "name": "이름(없으면 null)"}'
-)
-
-TTS_RATE = int(_get_env("TTS_RATE", "0"))
-TTS_VOLUME = int(_get_env("TTS_VOLUME", "100"))
-TTS_FORCE_VOICE_ID = _get_env("TTS_FORCE_VOICE_ID", "")
-TTS_OUTPUT_DEVICE = _get_env("TTS_OUTPUT_DEVICE", "")
 GREETING_TEXT = _get_env("GREETING_TEXT", "안녕하세요! 모티입니다.")
 FAREWELL_TEXT = _get_env("FAREWELL_TEXT", "도움이 되었길 바라요. 언제든 다시 불러주세요.")
 ENABLE_GREETING = _get_env("ENABLE_GREETING", "1") not in ("0", "false", "False")
@@ -85,116 +68,7 @@ class RecorderState:
     frames_q: queue.Queue = queue.Queue()
     stream: sd.InputStream | None = None
 
-# --- SapiTTSWorker (수정 없이 그대로 유지) ---
-class SapiTTSWorker:
-    def __init__(self):
-        self._q: queue.Queue[str | dict | None] = queue.Queue()
-        self.voice_id: str | None = None
-        self.output_device_desc: str | None = None
-        self.ready = threading.Event()
-        self.thread = threading.Thread(target=self._run, daemon=False)
-    def start(self):
-        self.thread.start()
-        self.ready.wait(timeout=5)
-    def speak(self, data):
-        if not data: return
-        text = data if isinstance(data, str) else data.get("text", "")
-        print(f"🔊 TTS enqueue ({len(text)} chars)")
-        self._q.put(data)
-    
-    def wait(self):
-        self._q.join()
-
-    def close_and_join(self, drain: bool = True, timeout: float = 15.0):
-        try:
-            if drain:
-                print("⏳ TTS 대기: 큐 비우는 중...")
-                self._q.join()
-            self._q.put(None)
-            self.thread.join(timeout=timeout)
-        except Exception: pass
-    def _run(self):
-        pc = None; w32 = None
-        try:
-            if not IS_WINDOWS:
-                print("ℹ️ SAPI는 Windows 전용입니다. (macOS에서는 비활성)"); self.ready.set(); return
-            import pythoncom as pc
-            import win32com.client as w32
-            pc.CoInitialize()
-            voice = w32.Dispatch("SAPI.SpVoice")
-            voices = voice.GetVoices()
-            chosen_voice_id = None
-            if TTS_FORCE_VOICE_ID:
-                for i in range(voices.Count):
-                    v = voices.Item(i)
-                    if v.Id == TTS_FORCE_VOICE_ID: chosen_voice_id = v.Id; break
-            if not chosen_voice_id:
-                for i in range(voices.Count):
-                    v = voices.Item(i)
-                    blob = f"{v.Id} {v.GetDescription()}".lower()
-                    if any(t in blob for t in ["ko", "korean", "한국어"]): chosen_voice_id = v.Id; break
-                if not chosen_voice_id and voices.Count > 0: chosen_voice_id = voices.Item(0).Id
-            if chosen_voice_id:
-                for i in range(voices.Count):
-                    v = voices.Item(i)
-                    if v.Id == chosen_voice_id: voice.Voice = v; self.voice_id = v.Id; break
-            outs = voice.GetAudioOutputs()
-            chosen_out_desc = None
-            if TTS_OUTPUT_DEVICE:
-                key = TTS_OUTPUT_DEVICE.lower()
-                for i in range(outs.Count):
-                    o = outs.Item(i); desc = o.GetDescription()
-                    if key in desc.lower(): voice.AudioOutput = o; chosen_out_desc = desc; break
-            if not chosen_out_desc and outs.Count > 0:
-                try: desc = outs.Item(0).GetDescription()
-                except Exception: desc = "System Default"
-                chosen_out_desc = desc
-            self.output_device_desc = chosen_out_desc
-            try: voice.Rate = max(-10, min(10, TTS_RATE))
-            except Exception: pass
-            try: voice.Volume = max(0, min(100, TTS_VOLUME))
-            except Exception: pass
-
-            default_rate = voice.Rate
-            default_volume = voice.Volume
-
-            print("🎧 사용 가능한 음성 목록 (SAPI):")
-            for i in range(voices.Count): v = voices.Item(i); print(f"  - [{i}] id='{v.Id}', desc='{v.GetDescription()}'")
-            print("🔉 사용 가능한 출력 장치 (SAPI):")
-            for i in range(outs.Count): o = outs.Item(i); print(f"  - [{i}] '{o.GetDescription()}'")
-            print(f"▶ 선택된 음성 id='{self.voice_id}'")
-            print(f"▶ 선택된 출력='{self.output_device_desc}'")
-            self.ready.set()
-            voice.Speak("T T S가 준비되었습니다.")
-            while True:
-                item = self._q.get()
-                if item is None: self._q.task_done(); break
-                try:
-                    if isinstance(item, dict):
-                        text = item.get("text")
-                        voice.Rate = item.get("rate", default_rate)
-                        voice.Volume = item.get("volume", default_volume)
-                    else:
-                        text = item
-
-                    if text:
-                        print("🔈 TTS speaking...");
-                        if hasattr(self, 'subtitle_queue') and self.subtitle_queue:
-                            self.subtitle_queue.put(text)
-                        voice.Speak(text, 0); 
-                        print("✅ TTS done")
-
-                finally:
-                    voice.Rate = default_rate
-                    voice.Volume = default_volume
-                    self._q.task_done()
-        except Exception as e: print(f"ℹ️ TTS 스레드 오류: {e}"); self.ready.set()
-        finally:
-            try:
-                if pc is not None: pc.CoUninitialize()
-            except Exception: pass
-
-# --- TypecastTTSWorker (수정 없이 그대로 유지) ---
+# --- TypecastTTSWorker (오직 이것만 남김) ---
 class TypecastTTSWorker:
     def __init__(self):
         self._q: queue.Queue[str | dict | None] = queue.Queue()
@@ -287,7 +161,7 @@ class PressToTalk:
                  shared_state: Optional[dict] = None,
                  mouth_event_queue: Optional[queue.Queue] = None,
                  brain_instance = None,
-                 perform_head_nod_cb: Optional[Callable[[int], None]] = None,  # 👈 추가됨
+                 perform_head_nod_cb: Optional[Callable[[int], None]] = None,
                  ): 
         
         api_key = os.environ.get("GOOGLE_API_KEY")
@@ -322,16 +196,12 @@ class PressToTalk:
         self.busy_lock = threading.Lock()
         self.busy_signals = 0
 
-        # 👈 끄덕임 관련 변수 초기화 추가
         self.perform_head_nod_cb = perform_head_nod_cb
         self.nodding_thread = None
         self.stop_nodding_event = threading.Event()
 
-        default_engine = "sapi" if IS_WINDOWS else "typecast"
-        engine = _get_env("TTS_ENGINE", default_engine).lower()
-        if engine == "sapi" and not IS_WINDOWS: engine = "typecast"
-        if engine == "typecast": self.tts = TypecastTTSWorker()
-        else: self.tts = SapiTTSWorker()
+        # 무조건 Typecast 엔진만 사용
+        self.tts = TypecastTTSWorker()
         self.tts.subtitle_queue = subtitle_queue
         self.tts.start()
 
@@ -359,7 +229,6 @@ class PressToTalk:
             if self.busy_signals == 0:
                 self.last_activity_time = time.time()
 
-    # 👈 경청 모드 끄덕임 워커 함수 추가
     def _listening_nod_worker(self):
         print("👂 경청 모드: 랜덤 끄덕임 스레드 시작...")
         
@@ -426,11 +295,8 @@ class PressToTalk:
     def _print_intro(self):
         print("\n=== Gemini PTT (경량화 공감 버전) ===")
         print("▶ 입 열기로 대화 시작 → ESC로 종료")
-        print("▶ 불필요한 액션(춤, 게임, 안아주기 등) 배제 완료")
+        print("▶ Typecast 클라우드 음성 엔진 전용 구동")
         print(f"▶ MODEL={MODEL_NAME}, SR={SAMPLE_RATE}Hz")
-        v_id, out_desc = getattr(self.tts, "voice_id", None), getattr(self.tts, "output_device_desc", None)
-        if v_id: print(f"▶ TTS Voice : {v_id}")
-        if out_desc: print(f"▶ TTS Output: {out_desc}")
         print("----------------------------------------------------------------\n")
 
     def _audio_callback(self, indata, frames, time_info, status):
@@ -469,7 +335,6 @@ class PressToTalk:
         self.state.recording = True
         print("🎙️  녹음 시작...")
 
-        # 👈 녹음 시작 시 끄덕임 스레드 가동!
         if callable(self.perform_head_nod_cb) and (self.nodding_thread is None or not self.nodding_thread.is_alive()):
             self.stop_nodding_event.clear()
             self.nodding_thread = threading.Thread(target=self._listening_nod_worker, daemon=True)
@@ -486,7 +351,7 @@ class PressToTalk:
             if self.state.stream: self.state.stream.stop(); self.state.stream.close()
         finally: self.state.stream = None
         
-        self.stop_nodding_event.set() # 👈 녹음 종료 시 끄덕임 중지!
+        self.stop_nodding_event.set()
 
         chunks = []
         while not self.state.frames_q.empty(): 
@@ -749,7 +614,7 @@ class PressToTalk:
             if key == keyboard.Key.esc:
                 print("ESC 감지 -> 종료 신호 보냄")
                 self.stop_event.set()
-                self.stop_nodding_event.set() # 👈 앱 종료 시에도 끄덕임 스레드 정지
+                self.stop_nodding_event.set() 
                 if self.current_listener and self.current_listener.is_alive():
                     self.current_listener.stop()
                 return False 

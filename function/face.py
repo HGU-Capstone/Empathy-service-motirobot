@@ -2,13 +2,11 @@
 from __future__ import annotations
 import os
 import threading
-import platform
 import queue
 import time
 from .vision_brain import RobotBrain
 from . import config as C, dxl_io as io, suppress
 from dynamixel_sdk import PortHandler, PacketHandler
-from mediapipe.framework.formats import landmark_pb2
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
@@ -16,8 +14,6 @@ try:
     import screeninfo
 except ImportError:
     screeninfo = None
-    
-_IS_DARWIN = (platform.system() == "Darwin")
 
 PAN_SIGN  = int(os.getenv("PAN_SIGN",  "1"))
 TILT_SIGN = int(os.getenv("TILT_SIGN", "-1"))
@@ -41,10 +37,6 @@ def _as_int(v, default=None):
     except Exception:
         return default
 
-def _can_show_window_in_this_thread() -> bool:
-    return not (_IS_DARWIN and threading.current_thread() is not threading.main_thread())
-
-# 파라미터에서 sleepy_event 삭제 완료
 def face_tracker_worker(port: PortHandler, pkt: PacketHandler, lock: threading.Lock,
                           stop_event: threading.Event, video_frame_q: queue.Queue,
                           shared_state: dict,
@@ -95,9 +87,6 @@ def face_tracker_worker(port: PortHandler, pkt: PacketHandler, lock: threading.L
     if print_debug:
         print(f"▶ Initial(Home) pan={pan_pos}, tilt={tilt_pos}")
 
-    # ============================================================
-    #         ↓↓↓ [설정] 실시간 추적을 위해 가속도 끄기 ↓↓↓
-    # ============================================================
     print(f"🤖 추적 모터(Pan/Tilt) 설정 (반응속도 최우선)...")
     with lock:
         accel_value = 0 
@@ -108,7 +97,6 @@ def face_tracker_worker(port: PortHandler, pkt: PacketHandler, lock: threading.L
         
         io.write4(pkt, port, C.PAN_ID, C.ADDR_PROFILE_ACCELERATION, accel_value)
         io.write4(pkt, port, C.TILT_ID, C.ADDR_PROFILE_ACCELERATION, accel_value)
-    # ============================================================
 
     print(f"▶ 카메라({camera_index})를 여는 중입니다...")
     cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
@@ -136,13 +124,9 @@ def face_tracker_worker(port: PortHandler, pkt: PacketHandler, lock: threading.L
     
     prev_time = 0
 
-    # ============================================================
-    #      ↓↓↓ [설정] 좌표 부드럽게 만들기 (스무딩 변수) ↓↓↓
-    # ============================================================
     smooth_nx = 1280 // 2
     smooth_ny = 720 // 2
     SMOOTH_FACTOR = 0.4 
-    # ============================================================
 
     def get_blendshape_score(blendshape_list, category_name):
         for category in blendshape_list:
@@ -176,7 +160,6 @@ def face_tracker_worker(port: PortHandler, pkt: PacketHandler, lock: threading.L
             
             current_mode = shared_state.get('mode', 'tracking')
 
-            # sleepy_event 로직 삭제됨. 항상 뇌가 인식하도록 변경.
             if brain:
                 cur_time = time.time()
                 
@@ -252,7 +235,6 @@ def face_tracker_worker(port: PortHandler, pkt: PacketHandler, lock: threading.L
 
             current_mode = shared_state.get('mode', 'tracking')
 
-            # 모드 변경 감지 로직 최소화 (ox_quiz 삭제)
             if current_mode != last_mode:
                 if current_mode == 'tracking':
                     print("▶ Mode changed to Tracking: Re-reading current motor position.")
@@ -261,13 +243,11 @@ def face_tracker_worker(port: PortHandler, pkt: PacketHandler, lock: threading.L
                     last_sent_pan, last_sent_tilt = pan_pos, tilt_pos
                 last_mode = current_mode
 
-            # 수면 중지 로직 삭제: 무조건 추적합니다.
             if current_mode == 'tracking':
                 if res.face_landmarks:
                     lm = res.face_landmarks[0][1] # 코 끝 좌표
                     raw_nx, raw_ny = int(lm.x * w), int(lm.y * h)
 
-                    # 좌표 스무딩
                     smooth_nx = int(raw_nx * SMOOTH_FACTOR + smooth_nx * (1 - SMOOTH_FACTOR))
                     smooth_ny = int(raw_ny * SMOOTH_FACTOR + smooth_ny * (1 - SMOOTH_FACTOR))
                     
@@ -349,9 +329,6 @@ def face_tracker_worker(port: PortHandler, pkt: PacketHandler, lock: threading.L
 def display_loop_main_thread(stop_event: threading.Event, window_name: str = "Auto-Track Face Center"):
     cv2, _ = suppress.import_cv2_mp()
 
-    if not _can_show_window_in_this_thread():
-        print("⚠️ display_loop_main_thread는 반드시 메인 스레드에서 호출해야 합니다.")
-        return
     try:
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
@@ -397,7 +374,7 @@ def display_loop_main_thread(stop_event: threading.Event, window_name: str = "Au
             
             cv2.imshow(window_name, frame)
             key = cv2.waitKey(1) & 0xFF
-            if key == 27:
+            if key == 27: # ESC
                 stop_event.set(); break
     finally:
         try: cv2.destroyAllWindows()

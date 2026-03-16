@@ -7,7 +7,6 @@ import os
 import sys
 import signal
 import threading
-import platform
 import queue
 import multiprocessing
 
@@ -31,7 +30,7 @@ def _get_env(name: str, default: str) -> str:
     return default if v is None or not str(v).strip() else str(v).strip()
 
 def _default_cam_index() -> int:
-    return 0 if platform.system() == "Darwin" else 1
+    return 1 # 윈도우 환경 기본 카메라 인덱스 고정
 
 def _open_port() -> tuple[PortHandler, PacketHandler]:
     port = PortHandler(C.DEVICENAME)
