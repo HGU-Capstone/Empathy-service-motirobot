@@ -7,16 +7,16 @@ import time
 
 # config.py에 정의된 변수명을 사용하여 가독성을 높인 초기 목표 위치 (바퀴 제외)
 MOTOR_HOME_POSITIONS = {
-    C.HEAD_NOD_ID: 4000,    # 1
-    C.PAN_ID: 2059,         # 2
-    C.SHOULDER_ID: 2075,    # 5
-    C.AUX_ID: 2065,         # 6
-    C.RIGHT_ARM_ID: 3685,   # 7
-    C.RIGHT_HAND_ID: 1823,  # 8
-    C.TILT_ID: 2086,        # 9
+    C.HEAD_NOD_ID: 4038,    # 1
+    C.PAN_ID: 2074,         # 2
+    C.SHOULDER_ID: 2080,    # 5
+    C.AUX_ID: 2120,         # 6
+    C.RIGHT_ARM_ID: 3723,   # 7
+    C.RIGHT_HAND_ID: 2019,  # 8
+    C.TILT_ID: 2072,        # 9
     10: 1010,               # 10
-    C.LEFT_ARM_ID: 1402,    # 11
-    C.LEFT_HAND_ID: 1864,   # 12
+    C.LEFT_ARM_ID: 1347,    # 11
+    C.LEFT_HAND_ID: 2044,   # 12
 }
 
 def initialize_robot(port: PortHandler, pkt: PacketHandler, lock):

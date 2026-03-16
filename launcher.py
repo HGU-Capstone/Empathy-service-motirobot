@@ -137,7 +137,8 @@ def main():
         kwargs=dict(camera_index=cam_index, draw_mesh=True, print_debug=True, mouth_event_queue=mouth_event_queue, brain=brain),
         name="face", daemon=True)
     
-    perform_head_nod = lambda reps=2: M.perform_head_nod(port, pkt, dxl_lock, repetitions=reps)
+    # === [수정된 부분] shared_state 인자를 추가로 넘겨줍니다. ===
+    perform_head_nod = lambda reps=2: M.perform_head_nod(port, pkt, dxl_lock, shared_state, repetitions=reps)
 
     t_ptt = threading.Thread(
         target=run_ptt,
