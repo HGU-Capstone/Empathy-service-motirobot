@@ -18,6 +18,7 @@ from function import init as I
 from function import face as F
 from function import wheel as W
 from function import dxl_io as IO
+from function import motion as M
 
 from gemini_api import PressToTalk
 from display.main import run_face_app
@@ -66,7 +67,7 @@ def _graceful_shutdown(port: PortHandler, pkt: PacketHandler, dxl_lock: threadin
 
 def run_ptt(
     emotion_queue, subtitle_queue, stop_event,
-    shared_state, mouth_event_queue, brain_instance
+    shared_state, mouth_event_queue, brain_instance=None, perform_head_nod_cb=None
 ):
     """PTT 스레드를 실행하는 타겟 함수"""
     try:
@@ -76,7 +77,8 @@ def run_ptt(
             stop_event=stop_event,
             shared_state=shared_state,
             mouth_event_queue=mouth_event_queue,
-            brain_instance=brain_instance
+            brain_instance=brain_instance,
+            perform_head_nod_cb=perform_head_nod_cb
         )
         app.run()
     except Exception as e:
@@ -135,11 +137,13 @@ def main():
         args=(port, pkt, dxl_lock, stop_event, video_frame_q, shared_state),
         kwargs=dict(camera_index=cam_index, draw_mesh=True, print_debug=True, mouth_event_queue=mouth_event_queue, brain=brain),
         name="face", daemon=True)
+    
+    perform_head_nod = lambda reps=2: M.perform_head_nod(port, pkt, dxl_lock, repetitions=reps)
 
     t_ptt = threading.Thread(
         target=run_ptt,
         args=(emotion_queue, subtitle_q, stop_event, shared_state, mouth_event_queue),
-        kwargs={'brain_instance': brain},
+        kwargs={'brain_instance': brain, 'perform_head_nod_cb': perform_head_nod},
         name="ptt", daemon=True)
 
     t_visual_face = threading.Thread(

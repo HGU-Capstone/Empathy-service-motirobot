@@ -1,9 +1,4 @@
 # gemini_api.py
-# ============================================================
-# Licensed to the Apache Software Foundation (ASF) under one
-# ... (라이선스 생략)
-# ============================================================
-
 from __future__ import annotations
 
 import os
@@ -292,6 +287,7 @@ class PressToTalk:
                  shared_state: Optional[dict] = None,
                  mouth_event_queue: Optional[queue.Queue] = None,
                  brain_instance = None,
+                 perform_head_nod_cb: Optional[Callable[[int], None]] = None,  # 👈 추가됨
                  ): 
         
         api_key = os.environ.get("GOOGLE_API_KEY")
@@ -326,6 +322,11 @@ class PressToTalk:
         self.busy_lock = threading.Lock()
         self.busy_signals = 0
 
+        # 👈 끄덕임 관련 변수 초기화 추가
+        self.perform_head_nod_cb = perform_head_nod_cb
+        self.nodding_thread = None
+        self.stop_nodding_event = threading.Event()
+
         default_engine = "sapi" if IS_WINDOWS else "typecast"
         engine = _get_env("TTS_ENGINE", default_engine).lower()
         if engine == "sapi" and not IS_WINDOWS: engine = "typecast"
@@ -357,6 +358,28 @@ class PressToTalk:
             print(f"⚡ 바쁨 신호 감소 (현재: {self.busy_signals})")
             if self.busy_signals == 0:
                 self.last_activity_time = time.time()
+
+    # 👈 경청 모드 끄덕임 워커 함수 추가
+    def _listening_nod_worker(self):
+        print("👂 경청 모드: 랜덤 끄덕임 스레드 시작...")
+        
+        start_wait = random.uniform(0.5, 1.5)
+        interrupted = self.stop_nodding_event.wait(timeout=start_wait)
+        if interrupted:
+            return
+
+        while not self.stop_nodding_event.is_set():
+            reps = 2 if random.random() < 0.3 else 1
+            if callable(self.perform_head_nod_cb):
+                try:
+                    threading.Thread(target=self.perform_head_nod_cb, args=(reps,), daemon=True).start()
+                except Exception: pass
+            
+            wait_time = random.uniform(1.5, 4.0)
+            if self.stop_nodding_event.wait(timeout=wait_time):
+                break
+        
+        print("👂 경청 모드: 랜덤 끄덕임 스레드 종료.")
 
     def _mouth_listener_worker(self):
         print("▶ 🔊 Mouth-to-Talk listener thread started.")
@@ -446,6 +469,12 @@ class PressToTalk:
         self.state.recording = True
         print("🎙️  녹음 시작...")
 
+        # 👈 녹음 시작 시 끄덕임 스레드 가동!
+        if callable(self.perform_head_nod_cb) and (self.nodding_thread is None or not self.nodding_thread.is_alive()):
+            self.stop_nodding_event.clear()
+            self.nodding_thread = threading.Thread(target=self._listening_nod_worker, daemon=True)
+            self.nodding_thread.start()
+
     def _stop_recording_and_transcribe(self):
         if not self.state.recording: return
         if self.emotion_queue:
@@ -457,6 +486,8 @@ class PressToTalk:
             if self.state.stream: self.state.stream.stop(); self.state.stream.close()
         finally: self.state.stream = None
         
+        self.stop_nodding_event.set() # 👈 녹음 종료 시 끄덕임 중지!
+
         chunks = []
         while not self.state.frames_q.empty(): 
             try:
@@ -480,7 +511,6 @@ class PressToTalk:
                 wf.setframerate(samplerate); wf.writeframes(audio_np.tobytes())
             return buf.getvalue()
 
-    # 💡 물리 동작 없이 순수 표정(시각적) 피드백만 남김
     def _analyze_and_send_emotion(self, text: str):
         if not self.emotion_queue or not text: return
         low_text = text.lower()
@@ -719,6 +749,7 @@ class PressToTalk:
             if key == keyboard.Key.esc:
                 print("ESC 감지 -> 종료 신호 보냄")
                 self.stop_event.set()
+                self.stop_nodding_event.set() # 👈 앱 종료 시에도 끄덕임 스레드 정지
                 if self.current_listener and self.current_listener.is_alive():
                     self.current_listener.stop()
                 return False 
@@ -738,7 +769,6 @@ class PressToTalk:
         self.listening_enabled.set()
         print("▶ 대화 세션을 시작합니다. (상시 대기 상태)")
 
-        # 기존 3단계(수면, 핫워드) 루프를 제거하고 상시 추적 루프로 교체
         while not self.stop_event.is_set():
             if self.shared_state:
                 raw_name = self.shared_state.get('detected_user')
@@ -772,7 +802,6 @@ class PressToTalk:
                     
                     detected_name = final_name
 
-                    # 새로운 사람이 왔거나 아직 로그인(이름 확인) 전인 경우
                     if detected_name != self.last_logged_in_user:
                         if detected_name == "Unknown":
                              if self.last_logged_in_user != "Wait_For_Name":
@@ -818,10 +847,8 @@ class PressToTalk:
                                 
                                 self.lower_busy_signal()
 
-            # 0.1초마다 루프 순회
             time.sleep(0.1)
 
-        # 프로그램 종료 로직
         print("PTT App 종료 절차 시작...")
         
         self._flush_session_history()
