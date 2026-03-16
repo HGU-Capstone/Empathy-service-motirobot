@@ -376,17 +376,6 @@ class PressToTalk:
                 wf.setframerate(samplerate); wf.writeframes(audio_np.tobytes())
             return buf.getvalue()
 
-    def _analyze_and_send_emotion(self, text: str):
-        if not self.emotion_queue or not text: return
-        low_text = text.lower()
-        if any(w in low_text for w in ["신나", "재밌", "좋아", "행복", "최고", "안녕", "반가", "환영", "어서오"]): self.emotion_queue.put("HAPPY")
-        elif any(w in low_text for w in ["놀라운", "놀랐", "깜짝", "세상에"]): self.emotion_queue.put("SURPRISED")
-        elif any(w in low_text for w in ["슬퍼", "우울", "힘들", "속상"]): self.emotion_queue.put("SAD")
-        elif any(w in low_text for w in ["화나", "짜증", "싫어", "최악"]): self.emotion_queue.put("ANGRY")
-        elif any(w in low_text for w in ["사랑", "다정", "따뜻", "고마워", "부끄","감사"]): self.emotion_queue.put("TENDER")
-        elif any(w in low_text for w in ["궁금", "생각", "글쎄", "흠.."]): self.emotion_queue.put("THINKING")
-        else: self.emotion_queue.put("NEUTRAL")
-
     def _transcribe_then_chat(self, wav_bytes: bytes):
         self.raise_busy_signal()
         ts = datetime.now().strftime("%H:%M:%S")
@@ -418,6 +407,7 @@ class PressToTalk:
 
             current_time_str = datetime.now().strftime("%Y년 %m월 %d일 %p %I시 %M분").replace("AM", "오전").replace("PM", "오후")
 
+            # --- 감정(EMOTION)을 추출하도록 프롬프트 수정 ---
             prompt = (
                 f"현재 시간: {current_time_str}\n"
                 f"현재 사용자: {current_face_name}{situation_hint}\n"
@@ -425,7 +415,8 @@ class PressToTalk:
                 "1. [INTENT]의도[/INTENT] ('introduction', 'chat' 중 택 1)\n"
                 "2. [NAME]이름[/NAME] ('introduction'일 때만)\n"
                 "3. [USER]사용자가 한 말[/USER]\n"
-                "4. 그 다음 줄부터: 모티의 대답\n"
+                "4. [EMOTION]감정[/EMOTION] (사용자의 말에 공감하는 모티의 표정. 반드시 다음 중 하나만 선택: HAPPY, SAD, ANGRY, SURPRISED, TENDER, NEUTRAL)\n"
+                "5. 그 다음 줄부터: 모티의 대답\n"
             )
 
             contents = list(self.chat.history)
@@ -445,21 +436,34 @@ class PressToTalk:
                 if not chunk.text: continue
                 buffer += chunk.text
 
+                # [EMOTION] 태그가 버퍼에 완전히 들어올 때까지 기다렸다가 파싱
                 if not header_parsed:
-                    if "[/USER]" in buffer:
+                    # 방어 코드: 혹시 모델이 EMOTION 태그를 빼먹을 경우를 대비해 USER가 있고 버퍼가 충분히 길면 파싱 시도
+                    if "[/EMOTION]" in buffer or ("[USER]" in buffer and len(buffer.split("[/USER]")[-1]) > 100):
                         intent_match = re.search(r'\[INTENT\](.*?)\[/INTENT\]', buffer, re.DOTALL)
                         user_match = re.search(r'\[USER\](.*?)\[/USER\]', buffer, re.DOTALL)
                         name_match = re.search(r'\[NAME\](.*?)\[/NAME\]', buffer, re.DOTALL)
+                        emotion_match = re.search(r'\[EMOTION\](.*?)\[/EMOTION\]', buffer, re.DOTALL)
                         
                         if intent_match: intent = intent_match.group(1).strip()
                         if user_match: user_text = user_match.group(1).strip()
                         extracted_name = name_match.group(1).strip() if name_match else None
                         
+                        # 파싱된 감정이 없으면 기본값은 NEUTRAL
+                        extracted_emotion = emotion_match.group(1).strip().upper() if emotion_match else "NEUTRAL"
+                        
                         print(f"[{ts}] [User] {user_text}")
                         print(f"[{ts}] [Intent] {intent}")
                         if extracted_name: print(f"[{ts}] [Name] {extracted_name}")
+                        print(f"[{ts}] [Emotion] {extracted_emotion}")
                         
-                        self._analyze_and_send_emotion(user_text)
+                        # 추출된 감정을 큐에 바로 전달하여 표정 즉시 변경
+                        if self.emotion_queue:
+                            valid_emotions = ["HAPPY", "SAD", "ANGRY", "SURPRISED", "TENDER", "NEUTRAL"]
+                            if extracted_emotion in valid_emotions:
+                                self.emotion_queue.put(extracted_emotion)
+                            else:
+                                self.emotion_queue.put("NEUTRAL")
 
                         if intent == "introduction":
                             name = extracted_name if extracted_name else user_text.split(" ")[0]
@@ -488,7 +492,9 @@ class PressToTalk:
                             break
 
                         # 헤더 파싱 후 대답 스트리밍 돌입
-                        buffer = buffer.split("[/USER]")[-1].lstrip()
+                        # [/EMOTION] 태그가 존재하면 그 뒤부터가 모티의 실제 대답
+                        split_token = "[/EMOTION]" if "[/EMOTION]" in buffer else "[/USER]"
+                        buffer = buffer.split(split_token)[-1].lstrip()
                         header_parsed = True
                     else:
                         continue 

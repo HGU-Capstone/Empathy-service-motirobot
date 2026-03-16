@@ -38,13 +38,13 @@ def _as_int(v, default=None):
         return default
 
 def face_tracker_worker(port: PortHandler, pkt: PacketHandler, lock: threading.Lock,
-                          stop_event: threading.Event, video_frame_q: queue.Queue,
-                          shared_state: dict,
-                          mouth_event_queue: queue.Queue | None = None,
-                          camera_index: int = 1,
-                          draw_mesh: bool = True,
-                          print_debug: bool = True,
-                          brain: RobotBrain = None):
+                        stop_event: threading.Event, video_frame_q: queue.Queue,
+                        shared_state: dict,
+                        mouth_event_queue: queue.Queue | None = None,
+                        camera_index: int = 1,
+                        draw_mesh: bool = True,
+                        print_debug: bool = True,
+                        brain: RobotBrain = None):
 
     cv2, mp = suppress.import_cv2_mp()
 
