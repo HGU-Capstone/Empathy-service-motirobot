@@ -89,8 +89,8 @@ def face_tracker_worker(port: PortHandler, pkt: PacketHandler, lock: threading.L
 
     print(f"🤖 추적 모터(Pan/Tilt) 설정 (반응속도 최우선)...")
     with lock:
-        accel_value = 0 
-        velocity_value = 0 
+        accel_value = 20 
+        velocity_value = 60
         
         io.write4(pkt, port, C.PAN_ID, C.ADDR_PROFILE_VELOCITY, velocity_value)
         io.write4(pkt, port, C.TILT_ID, C.ADDR_PROFILE_VELOCITY, velocity_value)
@@ -276,7 +276,7 @@ def face_tracker_worker(port: PortHandler, pkt: PacketHandler, lock: threading.L
                     pan_pos  = int(io.clamp(pan_pos  + C.PAN_SIGN  * pan_delta,  C.SERVO_MIN, C.SERVO_MAX))
                     tilt_pos = int(io.clamp(tilt_pos + C.TILT_SIGN * tilt_delta, C.SERVO_MIN, C.TILT_POS_MAX))
 
-                    move_threshold = 1 
+                    move_threshold = 15
                     
                     should_move_pan = abs(pan_pos - last_sent_pan) > move_threshold
                     should_move_tilt = abs(tilt_pos - last_sent_tilt) > move_threshold
