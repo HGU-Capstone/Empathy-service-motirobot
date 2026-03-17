@@ -19,6 +19,7 @@ import multiprocessing
 
 from function.profile_manager import ProfileManager
 from function.utils import _get_relative_time_str, _extract_text, _get_env, SYSTEM_INSTRUCTION
+from function.audio_manager import AudioManager  # 🎧 새로 분리한 오디오 매니저 추가
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -41,34 +42,14 @@ import requests
 
 PROFILE_DB_FILE = "user_profiles.json"
 
-def _find_input_device_by_name(name_substr: str) -> int | None:
-    if not name_substr: return None
-    key = name_substr.lower()
-    try:
-        for i, d in enumerate(sd.query_devices()):
-            if d.get('max_input_channels', 0) > 0 and key in d.get('name', '').lower():
-                return i
-    except Exception:
-        pass
-    return None
-
-# --- 전역 상수 ---
-SAMPLE_RATE = int(_get_env("SAMPLE_RATE", "16000"))
-CHANNELS = int(_get_env("CHANNELS", "1"))
-DTYPE = _get_env("DTYPE", "int16")
+# --- 전역 상수 (오디오 관련 상수는 audio_manager.py로 이동됨) ---
 MODEL_NAME = _get_env("MODEL_NAME", "gemini-3.1-flash-lite-preview")
 
 GREETING_TEXT = _get_env("GREETING_TEXT", "안녕하세요! 모티입니다.")
 FAREWELL_TEXT = _get_env("FAREWELL_TEXT", "도움이 되었길 바라요. 언제든 다시 불러주세요.")
 ENABLE_GREETING = _get_env("ENABLE_GREETING", "1") not in ("0", "false", "False")
 
-@dataclass
-class RecorderState:
-    recording: bool = False
-    frames_q: queue.Queue = queue.Queue()
-    stream: sd.InputStream | None = None
-
-# --- TypecastTTSWorker (오직 이것만 남김) ---
+# --- TypecastTTSWorker (기존 그대로 유지 - 재생용 sd, wave 사용) ---
 class TypecastTTSWorker:
     def __init__(self):
         self._q: queue.Queue[str | dict | None] = queue.Queue()
@@ -90,6 +71,7 @@ class TypecastTTSWorker:
             if drain: self._q.join()
             self._q.put(None); self.thread.join(timeout=timeout)
         except Exception: pass
+        
     def _run(self):
         try:
             api_key = _get_env("TYPECAST_API_KEY")
@@ -152,6 +134,7 @@ class TypecastTTSWorker:
                 finally: self._q.task_done()
         except Exception as e: print(f"ℹ️ Typecast TTS 스레드 오류: {e}"); self.ready.set()
 
+
 # --- 메인 PressToTalk 클래스 (컨트롤러) ---
 class PressToTalk:
     def __init__(self,
@@ -205,7 +188,7 @@ class PressToTalk:
         self.tts.subtitle_queue = subtitle_queue
         self.tts.start()
 
-        self.state = RecorderState()
+        self.audio = AudioManager() # 🎧 분리된 오디오 매니저 인스턴스화
         self._print_intro()
 
         self.profile_manager = ProfileManager(self)
@@ -296,44 +279,19 @@ class PressToTalk:
         print("\n=== Gemini PTT (경량화 공감 버전) ===")
         print("▶ 입 열기로 대화 시작 → ESC로 종료")
         print("▶ Typecast 클라우드 음성 엔진 전용 구동")
-        print(f"▶ MODEL={MODEL_NAME}, SR={SAMPLE_RATE}Hz")
+        print(f"▶ MODEL={MODEL_NAME}")
         print("----------------------------------------------------------------\n")
 
-    def _audio_callback(self, indata, frames, time_info, status):
-        if status: print(f"[오디오 경고] {status}", file=sys.stderr)
-        try:
-            self.state.frames_q.put_nowait(indata.copy())
-        except queue.Full:
-            pass 
-
     def _start_recording(self):
-        if self.state.recording: return
+        if self.audio.recording: return
         if self.emotion_queue:
             self.emotion_queue.put("LISTENING") 
 
         self.last_activity_time = time.time()
         print("✅ User started speaking.")
-
-        while not self.state.frames_q.empty():
-            try: self.state.frames_q.get_nowait()
-            except queue.Empty: break
-        device_idx = None
-        env_dev = os.environ.get("INPUT_DEVICE_INDEX")
-        if env_dev and env_dev.strip():
-            try: device_idx = int(env_dev.strip())
-            except Exception: device_idx = None
-        if device_idx is None:
-            env_name = os.environ.get("INPUT_DEVICE_NAME", "")
-            if env_name: device_idx = _find_input_device_by_name(env_name)
-        try:
-            if device_idx is not None: dinfo = sd.query_devices(device_idx, 'input')
-            else: default_in = sd.default.device[0]; dinfo = sd.query_devices(default_in, 'input')
-            print(f"🎚️  입력 장치: {dinfo['name']}")
-        except Exception: pass
-        self.state.stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE, callback=self._audio_callback, blocksize=0, device=device_idx)
-        self.state.stream.start()
-        self.state.recording = True
         print("🎙️  녹음 시작...")
+        
+        self.audio.start_recording()
 
         if callable(self.perform_head_nod_cb) and (self.nodding_thread is None or not self.nodding_thread.is_alive()):
             self.stop_nodding_event.clear()
@@ -341,40 +299,22 @@ class PressToTalk:
             self.nodding_thread.start()
 
     def _stop_recording_and_transcribe(self):
-        if not self.state.recording: return
+        if not self.audio.recording: return
         if self.emotion_queue:
             self.emotion_queue.put("THINKING") 
         self.last_activity_time = time.time()
         print("⏹️  녹음 종료, 전사 중...")
-        self.state.recording = False
-        try:
-            if self.state.stream: self.state.stream.stop(); self.state.stream.close()
-        finally: self.state.stream = None
         
         self.stop_nodding_event.set()
 
-        chunks = []
-        while not self.state.frames_q.empty(): 
-            try:
-                chunks.append(self.state.frames_q.get_nowait())
-            except queue.Empty:
-                break
-                
-        if not chunks: 
+        wav_bytes = self.audio.stop_recording()
+        
+        if not wav_bytes:
             print("(녹음 데이터가 없습니다.)\n")
             if self.emotion_queue: self.emotion_queue.put("NEUTRAL") 
             return
-        audio_np = np.concatenate(chunks, axis=0)
-        wav_bytes = self._to_wav_bytes(audio_np, SAMPLE_RATE, CHANNELS, DTYPE)
+            
         threading.Thread(target=self._transcribe_then_chat, args=(wav_bytes,), daemon=True).start()
-
-    @staticmethod
-    def _to_wav_bytes(audio_np: np.ndarray, samplerate: int, channels: int, dtype: str) -> bytes:
-        with io.BytesIO() as buf:
-            with wave.open(buf, 'wb') as wf:
-                wf.setnchannels(channels); wf.setsampwidth(np.dtype(dtype).itemsize)
-                wf.setframerate(samplerate); wf.writeframes(audio_np.tobytes())
-            return buf.getvalue()
 
     def _transcribe_then_chat(self, wav_bytes: bytes):
         self.raise_busy_signal()
@@ -407,7 +347,6 @@ class PressToTalk:
 
             current_time_str = datetime.now().strftime("%Y년 %m월 %d일 %p %I시 %M분").replace("AM", "오전").replace("PM", "오후")
 
-            # --- 감정(EMOTION)을 추출하도록 프롬프트 수정 ---
             prompt = (
                 f"현재 시간: {current_time_str}\n"
                 f"현재 사용자: {current_face_name}{situation_hint}\n"
@@ -436,9 +375,7 @@ class PressToTalk:
                 if not chunk.text: continue
                 buffer += chunk.text
 
-                # [EMOTION] 태그가 버퍼에 완전히 들어올 때까지 기다렸다가 파싱
                 if not header_parsed:
-                    # 방어 코드: 혹시 모델이 EMOTION 태그를 빼먹을 경우를 대비해 USER가 있고 버퍼가 충분히 길면 파싱 시도
                     if "[/EMOTION]" in buffer or ("[USER]" in buffer and len(buffer.split("[/USER]")[-1]) > 100):
                         intent_match = re.search(r'\[INTENT\](.*?)\[/INTENT\]', buffer, re.DOTALL)
                         user_match = re.search(r'\[USER\](.*?)\[/USER\]', buffer, re.DOTALL)
@@ -449,7 +386,6 @@ class PressToTalk:
                         if user_match: user_text = user_match.group(1).strip()
                         extracted_name = name_match.group(1).strip() if name_match else None
                         
-                        # 파싱된 감정이 없으면 기본값은 NEUTRAL
                         extracted_emotion = emotion_match.group(1).strip().upper() if emotion_match else "NEUTRAL"
                         
                         print(f"[{ts}] [User] {user_text}")
@@ -457,7 +393,6 @@ class PressToTalk:
                         if extracted_name: print(f"[{ts}] [Name] {extracted_name}")
                         print(f"[{ts}] [Emotion] {extracted_emotion}")
                         
-                        # 추출된 감정을 큐에 바로 전달하여 표정 즉시 변경
                         if self.emotion_queue:
                             valid_emotions = ["HAPPY", "SAD", "ANGRY", "SURPRISED", "TENDER", "NEUTRAL"]
                             if extracted_emotion in valid_emotions:
@@ -491,8 +426,6 @@ class PressToTalk:
                             except Exception as e: print(f"❌ 프로필 저장 실패: {e}")
                             break
 
-                        # 헤더 파싱 후 대답 스트리밍 돌입
-                        # [/EMOTION] 태그가 존재하면 그 뒤부터가 모티의 실제 대답
                         split_token = "[/EMOTION]" if "[/EMOTION]" in buffer else "[/USER]"
                         buffer = buffer.split(split_token)[-1].lstrip()
                         header_parsed = True
@@ -546,7 +479,6 @@ class PressToTalk:
             self.lower_busy_signal()
 
     def _flush_session_history(self):
-        """쌓인 대화 내용을 한 번에 저장하고 버퍼를 비웁니다."""
         if not self.session_history:
             self.chat = genai.GenerativeModel(self.MODEL_NAME, system_instruction=SYSTEM_INSTRUCTION).start_chat(history=[])
             return
@@ -569,23 +501,18 @@ class PressToTalk:
         print("🧹 Gemini 단기 기억 초기화 완료 (다음 응답 속도 최적화)")
     
     def _quick_listen_for_yes_no(self, timeout=3.0) -> bool:
-        """
-        3초간 음성을 듣고 '네(긍정)'인지 '아니오(부정)'인지 판단합니다.
-        반환값: True(네/긍정/학습진행), False(아니오/부정/학습스킵)
-        """
         print(f"👂 [Yes/No] {timeout}초간 답변 듣기 시작...")
         if self.emotion_queue: self.emotion_queue.put("LISTENING")
         
-        try:
-            recording = sd.rec(int(timeout * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE, blocking=True)
-            print("✅ [Yes/No] 녹음 완료, 분석 중...")
-            if self.emotion_queue: self.emotion_queue.put("THINKING")
-        except Exception as e:
-            print(f"❌ 녹음 실패: {e}")
-            return False 
+        wav_bytes = self.audio.record_fixed_duration(timeout)
+        
+        if not wav_bytes:
+            return False
+            
+        print("✅ [Yes/No] 녹음 완료, 분석 중...")
+        if self.emotion_queue: self.emotion_queue.put("THINKING")
 
         try:
-            wav_bytes = self._to_wav_bytes(recording, SAMPLE_RATE, CHANNELS, DTYPE)
             b64 = base64.b64encode(wav_bytes).decode("ascii")
             
             prompt = (
