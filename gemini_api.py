@@ -2,13 +2,11 @@
 from __future__ import annotations
 
 import os
-import io
 import sys
 import json
 import base64
 import queue
 import threading
-import wave
 import random
 import time
 import re 
@@ -19,7 +17,8 @@ import multiprocessing
 
 from function.profile_manager import ProfileManager
 from function.utils import _get_relative_time_str, _extract_text, _get_env, SYSTEM_INSTRUCTION
-from function.audio_manager import AudioManager  # 🎧 새로 분리한 오디오 매니저 추가
+from function.audio_manager import AudioManager
+from function.tts_manager import TTSManager 
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -34,118 +33,27 @@ try:
 except Exception:
     pass
 
-import numpy as np
-import sounddevice as sd
 from pynput import keyboard
 import google.generativeai as genai
-import requests
 
 PROFILE_DB_FILE = "user_profiles.json"
-
-# --- 전역 상수 (오디오 관련 상수는 audio_manager.py로 이동됨) ---
 MODEL_NAME = _get_env("MODEL_NAME", "gemini-3.1-flash-lite-preview")
-
 GREETING_TEXT = _get_env("GREETING_TEXT", "안녕하세요! 모티입니다.")
 FAREWELL_TEXT = _get_env("FAREWELL_TEXT", "도움이 되었길 바라요. 언제든 다시 불러주세요.")
 ENABLE_GREETING = _get_env("ENABLE_GREETING", "1") not in ("0", "false", "False")
-
-# --- TypecastTTSWorker (기존 그대로 유지 - 재생용 sd, wave 사용) ---
-class TypecastTTSWorker:
-    def __init__(self):
-        self._q: queue.Queue[str | dict | None] = queue.Queue()
-        self.ready = threading.Event()
-        self.thread = threading.Thread(target=self._run, daemon=False)
-    def start(self):
-        self.thread.start(); self.ready.wait(timeout=5)
-    def speak(self, data):
-        if not data: return
-        text = data if isinstance(data, str) else data.get("text", "")
-        print(f"🔊 TTS enqueue ({len(text)} chars)")
-        self._q.put(data)
-
-    def wait(self):
-        self._q.join()
-
-    def close_and_join(self, drain: bool = True, timeout: float = 30.0):
-        try:
-            if drain: self._q.join()
-            self._q.put(None); self.thread.join(timeout=timeout)
-        except Exception: pass
-        
-    def _run(self):
-        try:
-            api_key = _get_env("TYPECAST_API_KEY")
-            voice_id = _get_env("TYPECAST_VOICE_ID")
-            if not api_key or not voice_id:
-                print("❗ TYPECAST_API_KEY 또는 TYPECAST_VOICE_ID가 비어있습니다."); self.ready.set(); return
-            model = _get_env("TYPECAST_MODEL", "ssfm-v21")
-            language = _get_env("TYPECAST_LANGUAGE", "kor")
-            audio_format = _get_env("TYPECAST_AUDIO_FORMAT", "wav")
-            emotion = _get_env("TYPECAST_EMOTION", "")
-            intensity = float(_get_env("TYPECAST_EMOTION_INTENSITY", "1.0") or "1.0")
-            seed_env = _get_env("TYPECAST_SEED", "")
-            seed = int(seed_env) if (seed_env and seed_env.isdigit()) else None
-            self.ready.set()
-            print("▶ Typecast TTS 준비 완료")
-            url = "https://api.typecast.ai/v1/text-to-speech"
-            headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
-            while True:
-                item = self._q.get()
-                if item is None: self._q.task_done(); break
-                try:
-                    if isinstance(item, dict):
-                        text = item.get("text")
-                        rate_sapi = item.get("rate", 0) 
-                        rate_multiplier = 1.0 + (rate_sapi / 10.0) * 0.5 
-                        volume = item.get("volume", 100)
-                        pitch = item.get("pitch", 0)
-                    else:
-                        text = item
-                        rate_multiplier = 1.0
-                        volume = 100
-                        pitch = 0
-
-                    if not text: continue
-                    
-                    payload = {
-                        "voice_id": voice_id, "text": text, "model": model, "language": language, 
-                        "output": {
-                            "volume": volume, 
-                            "audio_pitch": pitch, 
-                            "audio_tempo": rate_multiplier, 
-                            "audio_format": audio_format
-                        }
-                    }
-                    if emotion: payload["prompt"] = {"emotion_preset": emotion, "emotion_intensity": intensity}
-                    if seed is not None: payload["seed"] = seed
-                    r = requests.post(url, headers=headers, json=payload, timeout=60)
-                    if r.status_code == 200:
-                        data = r.content
-                        with io.BytesIO(data) as buf:
-                            with wave.open(buf, "rb") as wf:
-                                sr = wf.getframerate(); sampwidth = wf.getsampwidth(); frames = wf.readframes(wf.getnframes())
-                        if sampwidth == 2: audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-                        else: audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-                        if hasattr(self, 'subtitle_queue') and self.subtitle_queue:
-                            self.subtitle_queue.put(text)
-
-                        sd.play(audio, sr); sd.wait(); print("✅ TTS done")
-                    else: print(f"❌ Typecast 오류 {r.status_code}: {r.text[:200]}")
-                finally: self._q.task_done()
-        except Exception as e: print(f"ℹ️ Typecast TTS 스레드 오류: {e}"); self.ready.set()
 
 
 # --- 메인 PressToTalk 클래스 (컨트롤러) ---
 class PressToTalk:
     def __init__(self,
-                 emotion_queue: Optional[queue.Queue] = None,
-                 subtitle_queue: Optional[multiprocessing.Queue] = None, 
-                 stop_event: Optional[threading.Event] = None,
-                 shared_state: Optional[dict] = None,
-                 mouth_event_queue: Optional[queue.Queue] = None,
-                 brain_instance = None,
-                 perform_head_nod_cb: Optional[Callable[[int], None]] = None,
-                 ): 
+                emotion_queue: Optional[queue.Queue] = None,
+                subtitle_queue: Optional[multiprocessing.Queue] = None, 
+                stop_event: Optional[threading.Event] = None,
+                shared_state: Optional[dict] = None,
+                mouth_event_queue: Optional[queue.Queue] = None,
+                brain_instance = None,
+                perform_head_nod_cb: Optional[Callable[[int], None]] = None,
+                ): 
         
         api_key = os.environ.get("GOOGLE_API_KEY")
         if not api_key or not api_key.strip():
@@ -183,12 +91,12 @@ class PressToTalk:
         self.nodding_thread = None
         self.stop_nodding_event = threading.Event()
 
-        # 무조건 Typecast 엔진만 사용
-        self.tts = TypecastTTSWorker()
+        # 📢 TTS 엔진 초기화 및 연결
+        self.tts = TTSManager()
         self.tts.subtitle_queue = subtitle_queue
         self.tts.start()
 
-        self.audio = AudioManager() # 🎧 분리된 오디오 매니저 인스턴스화
+        self.audio = AudioManager() 
         self._print_intro()
 
         self.profile_manager = ProfileManager(self)
@@ -488,13 +396,13 @@ class PressToTalk:
         full_conversation_log = "\n".join(self.session_history)
         
         if hasattr(self.profile_manager, "batch_update_summary"):
-             threading.Thread(
+            threading.Thread(
                 target=self.profile_manager.batch_update_summary, 
                 args=(full_conversation_log,),
                 daemon=True
             ).start()
         else:
-             print("⚠️ ProfileManager에 batch_update_summary 메서드가 없습니다. (임시 Skip)")
+            print("⚠️ ProfileManager에 batch_update_summary 메서드가 없습니다. (임시 Skip)")
 
         self.session_history = []
         self.chat = genai.GenerativeModel(self.MODEL_NAME, system_instruction=SYSTEM_INSTRUCTION).start_chat(history=[])
@@ -602,16 +510,16 @@ class PressToTalk:
 
                     if detected_name != self.last_logged_in_user:
                         if detected_name == "Unknown":
-                             if self.last_logged_in_user != "Wait_For_Name":
-                                 print("🤖 새로운 Unknown 감지 -> 이름 질문 프로세스")
-                                 self.raise_busy_signal()
-                                 self._speak_and_subtitle("안녕하세요! 처음 뵙네요. 성함이 어떻게 되시나요?")
-                                 self.tts.wait()
-                                 self.last_logged_in_user = "Wait_For_Name"
-                                 self.lower_busy_signal()
+                            if self.last_logged_in_user != "Wait_For_Name":
+                                print("🤖 새로운 Unknown 감지 -> 이름 질문 프로세스")
+                                self.raise_busy_signal()
+                                self._speak_and_subtitle("안녕하세요! 처음 뵙네요. 성함이 어떻게 되시나요?")
+                                self.tts.wait()
+                                self.last_logged_in_user = "Wait_For_Name"
+                                self.lower_busy_signal()
                         else:
                             if self.last_logged_in_user == "Wait_For_Name":
-                                 self.last_logged_in_user = detected_name
+                                self.last_logged_in_user = detected_name
                             else:
                                 print(f"🤖 아는 사람({detected_name}) -> 학습 질문")
                                 self.raise_busy_signal()
