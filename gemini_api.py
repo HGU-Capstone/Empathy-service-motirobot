@@ -15,14 +15,14 @@ from datetime import datetime
 from typing import Optional, Callable
 import multiprocessing
 
-from function.profile_manager import ProfileManager
-from function.utils import _get_relative_time_str, _extract_text, _get_env, SYSTEM_INSTRUCTION
-from function.audio_manager import AudioManager
-from function.tts_manager import TTSManager 
+from core.profile_manager import ProfileManager
+from core.utils import _get_relative_time_str, _extract_text, _get_env, SYSTEM_INSTRUCTION
+from media.audio_manager import AudioManager
+from media.tts_manager import TTSManager 
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from function.vision_brain import RobotBrain
+    from vision.vision_brain import RobotBrain
 
 try:
     from dotenv import load_dotenv

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from gemini_api import PressToTalk
 
-from function.utils import _get_relative_time_str, _extract_text, SYSTEM_INSTRUCTION
+from core.utils import _get_relative_time_str, _extract_text, SYSTEM_INSTRUCTION
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROFILE_DB_FILE = os.path.join(BASE_DIR, "user_profiles.json")

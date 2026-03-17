@@ -12,18 +12,18 @@ import multiprocessing
 
 from dynamixel_sdk import PortHandler, PacketHandler
 
-from function import config as C
-from function import init as I
-from function import face as F
-from function import wheel as W
-from function import dxl_io as IO
-from function import motion as M
+from hardware import config as C
+from hardware import init as I
+from vision import face as F
+from hardware import wheel as W
+from hardware import dxl_io as IO
+from hardware import motion as M
 
 from gemini_api import PressToTalk
 from display.main import run_face_app
 from display.subtitle import subtitle_window_process
 
-from function.vision_brain import RobotBrain
+from vision.vision_brain import RobotBrain
 
 def _get_env(name: str, default: str) -> str:
     v = os.environ.get(name)

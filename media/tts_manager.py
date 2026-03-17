@@ -7,7 +7,7 @@ import requests
 import numpy as np
 import sounddevice as sd
 
-from function.utils import _get_env
+from core.utils import _get_env
 
 class TTSManager:
     def __init__(self):

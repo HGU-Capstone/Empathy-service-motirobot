@@ -1,8 +1,8 @@
 import os
 import sys
 from dynamixel_sdk import PortHandler, PacketHandler
-from function import config as C
-from function import dxl_io as io
+from hardware import config as C
+from hardware import dxl_io as io
 
 def main():
     """모터 ID 1번부터 12번까지의 현재 위치를 스캔하고 출력합니다."""

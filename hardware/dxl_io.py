@@ -1,6 +1,6 @@
 from typing import Tuple
 from dynamixel_sdk import PortHandler, PacketHandler, COMM_SUCCESS
-from . import config as C
+from hardware import config as C
 
 def clamp(v: float, lo: float, hi: float) -> float:
     return lo if v < lo else hi if v > hi else v
