@@ -1,8 +1,8 @@
 # function/init.py
 
 from dynamixel_sdk import PortHandler, PacketHandler
-from . import config as C
-from . import dxl_io as io
+from hardware import config as C
+from hardware import dxl_io as io
 import time
 
 # config.py에 정의된 변수명을 사용하여 가독성을 높인 초기 목표 위치 (바퀴 제외)

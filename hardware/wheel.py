@@ -3,8 +3,8 @@ from typing import Tuple, Set
 from pynput import keyboard
 from dynamixel_sdk import PortHandler, PacketHandler
 
-from . import config as C
-from . import dxl_io as io
+from hardware import config as C
+from hardware import dxl_io as io
 
 _pressed: Set[str] = set()
 
