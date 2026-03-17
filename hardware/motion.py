@@ -3,8 +3,8 @@
 import time
 import threading
 from dynamixel_sdk import PortHandler, PacketHandler
-from function import config as C
-from function import dxl_io as io
+from hardware import config as C
+from hardware import dxl_io as io
 
 def perform_head_nod(port: PortHandler, pkt: PacketHandler, lock: threading.Lock, shared_state: dict, repetitions=2):
     """

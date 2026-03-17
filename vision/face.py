@@ -4,8 +4,12 @@ import os
 import threading
 import queue
 import time
+
+from ..hardware import config as C
+
+from ..core import suppress
 from .vision_brain import RobotBrain
-from . import config as C, dxl_io as io, suppress
+from ..hardware import dxl_io as io
 from dynamixel_sdk import PortHandler, PacketHandler
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision

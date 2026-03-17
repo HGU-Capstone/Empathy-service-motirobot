@@ -8,7 +8,7 @@ import numpy as np
 import sounddevice as sd
 from typing import Optional
 
-from function.utils import _get_env
+from core.utils import _get_env
 
 class AudioManager:
     def __init__(self):
