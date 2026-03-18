@@ -2,6 +2,10 @@
 
 > **Multi-modal Interaction을 위한 통합 로보틱스 시스템**
 
+<p align="center">
+   <img width="70%" alt="SirLab Logo" src="https://github.com/user-attachments/assets/4cb0b76d-4d31-428f-a5f0-a7362f37c754">
+</p>
+
 본 프로젝트는 실시간 비전 프로세싱과 **ART(Adaptive Resonance Theory)** 알고리즘을 융합하여 단 한 번의 학습만으로 사용자를 정밀하게 식별 및 기억(**One-Shot Learning**)하는 지능형 로봇 시스템입니다.
 
 특히, **비동기 멀티스레드 아키텍처(Asynchronous Multi-threaded Architecture)**를 도입하여 시스템의 동시성(Concurrency)과 반응 속도를 극대화했습니다. Vision, Voice, Control 등 각 모듈을 독립적인 스레드로 병렬 실행하고, 데이터 흐름을 **메시지 큐(Message Queue)**로 관리하여 프로세스 간 병목 현상을 제거했습니다.
@@ -10,35 +14,35 @@
 
 ---
 
-## 주요 기능
+## Main Function
 
-### 🤝 자연스러운 상호작용 (Natural Interaction)
+### Natural Interaction
 사용자의 손짓(Gesture)이나 움직임을 실시간으로 인식하여 반응합니다. 로봇의 시선이 사용자의 얼굴을 따라가는 **Face Tracking** 기술과 동작 인식을 통해 역동적인 상호작용을 제공합니다.
 
-### 💬 LLM 기반 대화 시스템 (LLM-based Conversation)
+### LLM-based Conversation
 **Google Gemini API**를 활용하여 정해진 답변이 아닌, 사용자의 맥락과 상황을 이해하는 자유로운 대화가 가능합니다. **하이브리드 라우팅(Hybrid Routing)**을 통해 단순 명령은 즉각 처리하고, 복잡한 대화는 LLM이 처리하여 효율성을 높였습니다.
 
-### 🧠 사용자 식별 및 기억 (User Recognition & Memory)
+### User Recognition & Memory
 MediaPipe와 **ART(Adaptive Resonance Theory)** 알고리즘을 결합하여, **단 1장의 사진만으로도 사용자를 즉시 등록하고 재인식**합니다. 대화 내용을 요약하여 JSON으로 관리함으로써, 이전 대화 맥락을 기억하고 연속적인 대화를 이어갑니다.
 
-### 👀 실시간 반응성 (Real-time Response)
+### Real-time Response
 **비동기(Asynchronous)** 아키텍처를 적용하여 대화 처리 중에도 끊김 없는 아이컨택(Eye-contact)과 **60FPS**의 부드러운 표정 변화를 유지합니다.
 
 ---
 
-## 📂 디렉토리 구조
+## File Structure
 
 프로젝트는 기능별로 명확하게 분리된 모듈 구조를 가집니다.
 
 ```text
 EMPATHY-SERVICE-MOTIROBOT/
-├── core/ # 🧠 두뇌 및 시스템 유틸리티 (신규)
+├── core/ # 두뇌 및 시스템 유틸리티 
 │ ├── init.py
 │ ├── profile_manager.py # 사용자 기억/프로필 관리 및 요약
 │ ├── suppress.py # 경고 메시지/로그 숨김 유틸리티
 │ └── utils.py # 시스템 프롬프트, 환경변수, 시간 계산 등
 │
-├── hardware/ # ⚙️ 모터 및 물리 제어 (신규)
+├── hardware/ # 모터 및 물리 제어 
 │ ├── init.py
 │ ├── config.py # 로봇 설정값 (포트, 상수, PID 등)
 │ ├── dxl_io.py # Dynamixel 모터 제어 (읽기/쓰기)
@@ -46,36 +50,36 @@ EMPATHY-SERVICE-MOTIROBOT/
 │ ├── motion.py # 고개 끄덕임 등 특정 모션 스크립트
 │ └── wheel.py # 모바일 베이스(바퀴) 구동 제어
 │
-├── media/ # 🔊 오디오 및 음성 제어 (신규)
+├── media/ # 오디오 및 음성 제어 
 │ ├── init.py
-│ ├── audio_manager.py # 마이크 녹음 및 입력 제어 (분리 완료!)
-│ └── tts_manager.py # Typecast API 음성 출력 제어 (분리 완료!)
+│ ├── audio_manager.py # 마이크 녹음 및 입력 제어 
+│ └── tts_manager.py # Typecast API 음성 출력 제어 
 │
-├── vision/ # 👀 카메라 및 시각 인지 (신규)
+├── vision/ # 카메라 및 시각 인지
 │ ├── init.py
 │ ├── face.py # 사용자 얼굴 추적(Tracking) 스레드
 │ └── vision_brain.py # MediaPipe 및 ART 기반 얼굴 식별 로직
 │
-├── display/ # 🖥️ 화면(표정) 및 자막 (기존 유지)
+├── display/ # 화면(표정) 및 자막 
 │ ├── emotions/ # 감정별 표정 렌더링 파일들 (happy, sad 등)
 │ ├── fonts/ # UI 폰트 리소스
 │ ├── common_helpers.py # 디스플레이 공통 함수
 │ ├── main.py # 그래픽 렌더링 메인 스레드
 │ └── subtitle.py # 하단 자막 윈도우 프로세스
 │
-├── models/ # 🤖 AI 모델 파일 (기존 유지)
+├── models/ # AI 모델 파일 
 │ └── face_landmarker.task
 │
-├── art_brain_manage.py # 🔧 얼굴 인식 DB 관리 유틸 (기존 유지)
-├── debug_motor_positions.py # 🔧 모터 위치 디버깅 유틸 (기존 유지)
-├── gemini_api.py # 💬 LLM 메인 대화 엔진 (PressToTalk)
-├── launcher.py # 🚀 전체 시스템 슈퍼바이저 (메인 실행 파일)
+├── art_brain_manage.py # 얼굴 인식 DB 관리 유틸 
+├── debug_motor_positions.py # 모터 위치 디버깅 유틸 
+├── gemini_api.py # LLM 메인 대화 엔진 
+├── launcher.py # 전체 시스템 슈퍼바이저 (메인 실행 파일)
 ├── README.md # 프로젝트 설명서
 └── .gitignore # Git 제외 목록
 ```
 ---
 
-## ⚙️ 작동 원리 (아키텍처)
+## Architecture
 
 이 로봇은 **인지(Perception) - 판단(Cognition) - 표현(Action)** 의 3계층 구조로 작동합니다.
 
