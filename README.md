@@ -3,7 +3,7 @@
 > **Multi-modal Interaction을 위한 통합 로보틱스 시스템**
 
 <p align="center">
-   <img width="70%" alt="SirLab Logo" src="https://github.com/user-attachments/assets/4cb0b76d-4d31-428f-a5f0-a7362f37c754">
+   <img width="40%" alt="SirLab Logo" src="https://github.com/user-attachments/assets/4cb0b76d-4d31-428f-a5f0-a7362f37c754">
 </p>
 
 본 프로젝트는 실시간 비전 프로세싱과 **ART(Adaptive Resonance Theory)** 알고리즘을 융합하여 단 한 번의 학습만으로 사용자를 정밀하게 식별 및 기억(**One-Shot Learning**)하는 지능형 로봇 시스템입니다.
