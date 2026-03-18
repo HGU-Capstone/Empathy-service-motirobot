@@ -81,6 +81,10 @@ EMPATHY-SERVICE-MOTIROBOT/
 
 ## Architecture
 
+<p align="center">
+   <img width="80%" height="50%" alt="Architecture" src="https://github.com/user-attachments/assets/7003056e-616f-4176-aee6-2a17c5c25c29">
+</p>
+
 이 로봇은 **인지(Perception) - 판단(Cognition) - 표현(Action)** 의 3계층 구조로 작동합니다.
 
 1.  **Perception (인지)**
