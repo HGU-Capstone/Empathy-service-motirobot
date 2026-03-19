@@ -514,7 +514,7 @@ class PressToTalk:
                         if detected_name == "Unknown":
                             # 🚨 [핵심 보완 2] 이미 대화가 시작된(Session Active) 상태라면 잠깐 얼굴을 놓쳐도 다시 인터뷰하지 않음!
                             if self.session_active:
-                                print("🛡️ [방어] 대화 도중 잠깐 Unknown 감지됨. 무시합니다.")
+                                
                                 continue
 
                             print("🤖 새로운 Unknown 감지 -> 인터뷰 시작!")
