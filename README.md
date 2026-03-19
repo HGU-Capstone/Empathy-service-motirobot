@@ -97,4 +97,4 @@ EMPATHY-SERVICE-MOTIROBOT/
 
 3.  **Action (표현)**
     * **Visual:** 현재 감정 상태에 맞는 표정을 디스플레이에 실시간으로 렌더링합니다.
-    * **Physical:** PID 제어를 통해 얼굴을 추적(Tracking)하거나, 제스처 및 게임 동작을 물리적으로 수행합니다.
+    * **Physical:** PID 제어를 통해 얼굴을 추적(Tracking)하거나, 제스처를 물리적으로 수행합니다.
