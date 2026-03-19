@@ -67,13 +67,16 @@ class PressToTalk:
         genai.configure(api_key=api_key)
         self.MODEL_NAME = MODEL_NAME
         self.model = genai.GenerativeModel(MODEL_NAME)
-        # 초기 뇌 장착 (빈 프로필 기준)
         self.chat = self.model.start_chat(history=[])
         
-        # === [한동대 특화: 상태 머신 변수 추가] ===
-        self.interview_stage_index = -1  # -1이면 일반 대화 모드, 0~7은 인터뷰 진행 중
+        self.interview_stage_index = -1  
         self.temp_user_info = {}
-        # ==========================================
+        
+        self.is_setting_up_main_chat = False 
+        # 🚨 [핵심 추가] 메인 대화 세팅 직후 찰나의 Unknown을 무시하기 위한 쿨다운 타임
+        self.main_chat_cooldown_until = 0 
+        # 🚨 [핵심 추가] 현재 세션에서 이미 메인 대화에 진입했다면, 도중에 잠깐 Unknown이 떠도 재인터뷰를 막음
+        self.session_active = False 
 
         self.current_user_name = None
         self.profile_db_file = PROFILE_DB_FILE
@@ -102,7 +105,6 @@ class PressToTalk:
         self.nodding_thread = None
         self.stop_nodding_event = threading.Event()
 
-        # 📢 TTS 엔진 초기화 및 연결
         self.tts = TTSManager()
         self.tts.subtitle_queue = subtitle_queue
         self.tts.start()
@@ -119,11 +121,7 @@ class PressToTalk:
 
         self.shared_state = shared_state
 
-    # ========================================================
-    # [Gemini 응답 후처리 유틸]
-    # ========================================================
     def _process_and_speak_gemini_response(self, text: str):
-        """스트리밍이 아닌 단순 생성 응답에서 EMOTION을 추출하고 말합니다."""
         emotion = "NEUTRAL"
         emotion_match = re.search(r'\[EMOTION\](.*?)\[/EMOTION\]', text, re.DOTALL)
         if emotion_match:
@@ -137,11 +135,16 @@ class PressToTalk:
 
         clean_text = re.sub(r'\[EMOTION\].*?\[/EMOTION\]', '', text, flags=re.DOTALL).strip()
         clean_text = clean_text.replace('*', '')
-        self._speak_and_subtitle(clean_text)
+        
+        if clean_text:
+            self._speak_and_subtitle(clean_text)
+            self.tts.wait() 
+        else:
+            print("⚠️ [경고] 모티가 뱉을 텍스트가 비어있습니다!")
+            
         return clean_text
 
     def _process_and_speak_stream(self, response_stream, user_text=""):
-        """본 대화 모드에서 스트리밍으로 응답을 처리하고 히스토리를 업데이트합니다."""
         buffer = ""
         terminators = ['.', '!', '?', '\n']
         header_parsed = False
@@ -207,9 +210,6 @@ class PressToTalk:
             self.session_history.append(log_entry)
             print(f"📝 대화 메모리 기록 (현재 {len(self.session_history)}턴 쌓임)")
 
-    # ========================================================
-    # 상태 관리 및 오디오 제어
-    # ========================================================
     def raise_busy_signal(self):
         with self.busy_lock:
             self.busy_signals += 1
@@ -290,17 +290,15 @@ class PressToTalk:
             
         threading.Thread(target=self._transcribe_then_chat, args=(wav_bytes,), daemon=True).start()
 
-    # ========================================================
-    # 🧠 [가장 중요한 로직] 오디오 전사 및 뇌(프롬프트) 라우팅
-    # ========================================================
     def _transcribe_then_chat(self, wav_bytes: bytes):
         self.raise_busy_signal()
         ts = datetime.now().strftime("%H:%M:%S")
+        
+        emotion_hint = "\n\n🚨[출력 필수 조건]: 답변의 맨 앞에 반드시 [EMOTION]감정[/EMOTION] 태그를 하나 작성하고, 이어서 생성된 대답 텍스트를 명확하게 작성하세요. (예: [EMOTION]HAPPY[/EMOTION] 반가워요! 몇 학년이신가요?)"
 
         try:
             b64 = base64.b64encode(wav_bytes).decode("ascii")
 
-            # 1. 🎤 [오디오 -> 텍스트 전사]
             transcribe_resp = self.model.generate_content([
                 "첨부된 오디오에서 사용자가 한 말만 정확하게 텍스트로 받아적으세요. 대답이나 부연설명 절대 금지.",
                 {"inline_data": {"mime_type": "audio/wav", "data": b64}}
@@ -313,34 +311,28 @@ class PressToTalk:
                 self.lower_busy_signal()
                 return
 
-            # ========================================================
-            # 모드 A: 🕵️ [사전 인터뷰 모드] (0 ~ 7단계)
-            # ========================================================
             if self.interview_stage_index >= 0:
                 current_stage_dict = STAGES[self.interview_stage_index]
                 current_stage = current_stage_dict["key"]
                 stage_desc = current_stage_dict["desc"]
 
-                # 이름 호칭 정리
                 current_name = self.temp_user_info.get("이름", "사용자")
                 if current_name and len(current_name) == 3 and current_name != "사용자":
                     current_name = current_name[1:]
 
-                # [A-1] 데이터 추출
                 ext_prompt = build_extract_prompt(user_text, current_stage, stage_desc)
                 ext_resp = self.model.generate_content(ext_prompt)
                 extracted_val = _extract_text(ext_resp).strip()
 
-                # [A-2] 검증 및 후처리
                 if "FAIL" in extracted_val.upper() or not extracted_val:
-                    # 실패: 재질문
-                    retry_prompt = build_retry_prompt(current_name, current_stage, user_text)
-                    retry_prompt += "\n\n반드시 [EMOTION]...[/EMOTION] 태그를 포함하여 출력하세요."
+                    print(f"⚠️ [{current_stage}] 추출 실패: '{user_text}' -> 재질문 생성 중...")
+                    retry_prompt = build_retry_prompt(current_name, current_stage, user_text) + emotion_hint
                     
                     retry_resp = self.model.generate_content(retry_prompt)
-                    self._process_and_speak_gemini_response(retry_resp.text)
+                    raw_text = _extract_text(retry_resp)
+                    print(f"👉 [DEBUG] Retry 응답: {raw_text}")
+                    self._process_and_speak_gemini_response(raw_text)
                 else:
-                    # 성공: 데이터 저장
                     print(f"✅ [{current_stage}] 저장 완료: {extracted_val}")
                     self.temp_user_info[current_stage] = extracted_val
                     
@@ -348,29 +340,35 @@ class PressToTalk:
                         self.shared_state['current_user_name'] = self.temp_user_info["이름"]
                         self.last_logged_in_user = self.temp_user_info["이름"]
 
-                    # [A-3] 다음 단계 진행 or 완료 처리
                     if self.interview_stage_index < len(STAGES) - 1:
-                        # 다음 질문 생성
                         next_stage = STAGES[self.interview_stage_index + 1]["key"]
+                        print(f"👉 다음 단계 준비: {next_stage}")
                         next_prompt = build_next_prompt(
                             current_stage, next_stage, extracted_val,
                             self.temp_user_info.get("학년", ""),
                             current_name
-                        )
-                        next_prompt += "\n\n반드시 [EMOTION]...[/EMOTION] 태그를 포함하여 출력하세요."
+                        ) + emotion_hint
                         
                         resp = self.model.generate_content(next_prompt)
-                        self._process_and_speak_gemini_response(resp.text)
+                        raw_text = _extract_text(resp)
+                        print(f"👉 [DEBUG] Next 응답: {raw_text}")
+                        self._process_and_speak_gemini_response(raw_text)
                         
                         self.interview_stage_index += 1
+                        print(f"✅ {current_stage} 처리 및 응답 완료! 다음 질문({next_stage}) 대기 상태 돌입.")
                     else:
-                        # 🎉 인터뷰 종료 및 본 대화 전환
-                        self.interview_stage_index = -1
-                        final_name = self.temp_user_info.get("이름", "사용자")
                         print("🎉 인터뷰 완료! 본 대화 세팅 시작...")
+                        self.is_setting_up_main_chat = True
+                        self.listening_enabled.clear() 
+                        self.interview_stage_index = -1
                         
-                        # 1. 10초 스캔 진행
+                        final_name = self.temp_user_info.get("이름", "사용자")
+                        self.shared_state['current_user_name'] = final_name
+                        self.last_logged_in_user = final_name
+                        
                         self._speak_and_subtitle(f"정보를 모두 기억했어요! {final_name}님을 알아볼 수 있게 10초 동안 카메라를 봐주세요.")
+                        self.tts.wait()
+                        
                         if self.emotion_queue: self.emotion_queue.put("SCANNING")
                         
                         self.shared_state['force_learning'] = True
@@ -378,22 +376,31 @@ class PressToTalk:
                         time.sleep(10)
                         self.shared_state['force_learning'] = False
                         
-                        # 2. JSON 프로필 저장 및 뇌 장착 (이 과정에서 과거 기억+시간 개념이 뇌에 심어집니다)
                         self.profile_manager.save_user_info(final_name, self.temp_user_info)
                         self.profile_manager.load_profile_for_chat(final_name)
                         
-                        # 3. 자연스러운 첫 멘트 쏘기 (Hidden Prompt)
                         mbti = self.temp_user_info.get("MBTI", "")
                         saesae = self.temp_user_info.get("새새 인원", "")
                         major = self.temp_user_info.get("전공", "")
                         
-                        hidden_prompt = build_hidden_first_prompt(final_name, mbti, saesae, major)
+                        hidden_prompt = build_hidden_first_prompt(final_name, mbti, saesae, major) + emotion_hint
                         resp = self.chat.send_message(hidden_prompt)
-                        self._process_and_speak_gemini_response(resp.text)
+                        raw_text = _extract_text(resp)
+                        print(f"👉 [DEBUG] 메인 대화 진입 응답: {raw_text}")
+                        self._process_and_speak_gemini_response(raw_text)
+                        
+                        while not self.mouth_event_queue.empty():
+                            try: self.mouth_event_queue.get_nowait()
+                            except: pass
+                            
+                        self.listening_enabled.set()
+                        
+                        # 🚨 [핵심 보완] 인터뷰 성공적으로 끝났으므로 세션을 Active로 변경하고, 무적 시간을 5초 줍니다.
+                        self.session_active = True
+                        self.main_chat_cooldown_until = time.time() + 5.0
+                        self.is_setting_up_main_chat = False
+                        print("✅ 메인 대화 세팅 완벽 종료! 카메라 및 마이크 정상화. (5초 쿨다운 적용)")
 
-            # ========================================================
-            # 모드 B: 💬 [본 대화 모드] (일반 핑퐁)
-            # ========================================================
             else:
                 current_time_str = datetime.now().strftime("%Y년 %m월 %d일 %p %I시 %M분")
                 prompt = (
@@ -415,7 +422,7 @@ class PressToTalk:
             if self.emotion_queue: self.emotion_queue.put("NEUTRAL")
             
         finally:
-            print("... TTS 대기 ...")
+            print("... TTS 대기 완료(finally) ...")
             self.tts.wait()
             if self.emotion_queue: self.emotion_queue.put("NEUTRAL")
             self.lower_busy_signal()
@@ -428,6 +435,8 @@ class PressToTalk:
         if hasattr(self.profile_manager, "batch_update_summary"):
             threading.Thread(target=self.profile_manager.batch_update_summary, args=(full_conversation_log,), daemon=True).start()
         self.session_history = []
+        # 대화 세션이 전환될 때 플래그 해제 (사람이 완전히 떠났을 때)
+        self.session_active = False 
     
     def _quick_listen_for_yes_no(self, timeout=3.0) -> bool:
         print(f"👂 [Yes/No] {timeout}초간 답변 듣기 시작...")
@@ -460,9 +469,6 @@ class PressToTalk:
             if self.current_listener and self.current_listener.is_alive(): self.current_listener.stop()
             return False 
 
-    # ========================================================
-    # 🏃 [실행 루프] 로봇 얼굴 인식 판단부
-    # ========================================================
     def run(self):
         self.current_listener = keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
         self.current_listener.start()
@@ -476,12 +482,13 @@ class PressToTalk:
         print("▶ 대화 세션을 시작합니다. (상시 대기 상태)")
 
         while not self.stop_event.is_set():
+            time.sleep(0.1)
+
             if self.shared_state:
                 raw_name = self.shared_state.get('detected_user')
                 
                 if raw_name and raw_name not in ["Thinking...", None]:
-                    # 디바운스
-                    stabilize_timeout = 2.5 
+                    stabilize_timeout = 1.0 
                     elapsed = 0.0
                     final_name = raw_name
                     
@@ -499,11 +506,17 @@ class PressToTalk:
                     if not final_name or final_name in ["Thinking...", None]: continue 
                     detected_name = final_name
 
+                    # 🚨 [핵심 보완 1] 인터뷰 진행 중이거나, 세팅 중이거나, 세팅 직후 쿨다운 상태면 카메라 감지를 무시함
+                    if self.interview_stage_index >= 0 or self.is_setting_up_main_chat or time.time() < self.main_chat_cooldown_until:
+                        continue
+
                     if detected_name != self.last_logged_in_user:
-                        # ------------------------------------------------------
-                        # [상황 1] 모르는 사람 등장 -> 🕵️ 인터뷰 모드 시작
-                        # ------------------------------------------------------
                         if detected_name == "Unknown":
+                            # 🚨 [핵심 보완 2] 이미 대화가 시작된(Session Active) 상태라면 잠깐 얼굴을 놓쳐도 다시 인터뷰하지 않음!
+                            if self.session_active:
+                                print("🛡️ [방어] 대화 도중 잠깐 Unknown 감지됨. 무시합니다.")
+                                continue
+
                             print("🤖 새로운 Unknown 감지 -> 인터뷰 시작!")
                             self.raise_busy_signal()
                             
@@ -512,37 +525,36 @@ class PressToTalk:
                             self.last_logged_in_user = "Unknown"
                             self.shared_state['current_user_name'] = "Unknown"
 
-                            opening_prompt = build_opening_prompt() + "\n\n반드시 [EMOTION]...[/EMOTION] 태그를 포함하여 출력하세요."
+                            opening_prompt = build_opening_prompt() + "\n\n🚨[출력 필수 조건]: 답변의 맨 앞에 반드시 [EMOTION]감정[/EMOTION] 태그를 하나 작성하고, 이어서 생성된 대답 텍스트를 명확하게 작성하세요."
                             resp = self.model.generate_content(opening_prompt)
+                            raw_text = _extract_text(resp)
                             
-                            self._process_and_speak_gemini_response(resp.text)
-                            self.tts.wait()
+                            print(f"👉 [DEBUG] 첫 인사 응답: {raw_text}")
+                            self._process_and_speak_gemini_response(raw_text)
                             self.lower_busy_signal()
                             
-                        # ------------------------------------------------------
-                        # [상황 2] 아는 사람 등장 -> 💬 프로필 로드 및 본 대화
-                        # ------------------------------------------------------
                         else:
                             print(f"🤖 아는 사람({detected_name}) 감지 -> 프로필 로드 및 대화 세팅")
                             self.raise_busy_signal()
                             
                             self.last_logged_in_user = detected_name
                             self.shared_state['current_user_name'] = detected_name
-                            self.interview_stage_index = -1 # 인터뷰 생략, 바로 본 대화
+                            self.interview_stage_index = -1 
                             
-                            # 1. 프로필 매니저가 DB 로드 + 요약본 결합 + 뇌 장착까지 한 번에 다 해줌!
                             self.profile_manager.load_profile_for_chat(detected_name)
                             
-                            # 2. 안면 인식 유무 질문
                             if self.emotion_queue: self.emotion_queue.put("HAPPY")
                             greeting_msg = f"{detected_name}님 안녕하세요! {detected_name}님을 더 잘 기억할 수 있게 얼굴 인식을 수행할까요?"
                             self._speak_and_subtitle(greeting_msg)
                             self.tts.wait()
 
+                            self.listening_enabled.clear()
                             do_learning = self._quick_listen_for_yes_no(timeout=4.0)
 
                             if do_learning:
                                 self._speak_and_subtitle("네! 10초 동안 카메라를 봐주세요.")
+                                self.tts.wait()
+                                
                                 if self.emotion_queue: self.emotion_queue.put("SCANNING")
                                 self.shared_state['force_learning'] = True
                                 self.shared_state['learning_target_name'] = detected_name
@@ -551,19 +563,32 @@ class PressToTalk:
                                 
                                 if self.emotion_queue: self.emotion_queue.put("HAPPY")
                                 self._speak_and_subtitle("얼굴 데이터 업데이트 완료! 이제 대화를 시작해요!")
+                                self.tts.wait()
                             else:
                                 if self.emotion_queue: self.emotion_queue.put("HAPPY")
                                 self._speak_and_subtitle("네, 바로 대화를 시작할게요.")
+                                self.tts.wait()
                             
-                            self.tts.wait()
+                            while not self.mouth_event_queue.empty():
+                                try: self.mouth_event_queue.get_nowait()
+                                except: pass
+                            self.listening_enabled.set()
+                            
+                            # 🚨 아는 사람일 경우에도 세션을 활성화시키고 쿨다운 부여
+                            self.session_active = True
+                            self.main_chat_cooldown_until = time.time() + 5.0
                             self.lower_busy_signal()
-
-            time.sleep(0.1)
+                
+                # 사람이 화면에서 완전히 사라진 상태(None)가 지속될 경우 세션을 종료하는 로직 (기존 _flush_session_history 호출 트리거에 의존)
 
         print("PTT App 종료 절차 시작...")
         self._flush_session_history()
         self.listening_enabled.clear()
         
+        self.stop_nodding_event.set()
+        if self.nodding_thread and self.nodding_thread.is_alive():
+            self.nodding_thread.join(timeout=0.5)
+
         if self.current_listener and self.current_listener.is_alive(): self.current_listener.stop()
         if self.mouth_listener_thread and self.mouth_listener_thread.is_alive(): self.mouth_listener_thread.join(timeout=1.0)
         
