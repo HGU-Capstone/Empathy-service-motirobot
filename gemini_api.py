@@ -205,8 +205,9 @@ class PressToTalk:
             new_history.append({'role': 'user', 'parts': [user_text]})
             new_history.append({'role': 'model', 'parts': [speak_text_full]})
             self.chat = self.chat.model.start_chat(history=new_history)
-            
-            log_entry = f"User: {user_text} | Moti: {speak_text_full}"
+            moti_ts = datetime.now().strftime("%H:%M:%S")
+            current_name = self.last_logged_in_user if self.last_logged_in_user and self.last_logged_in_user != "Unknown" else "사용자"
+            log_entry = f"[{ts}] {current_name}: {user_text}\n[{moti_ts}] 모티: {speak_text_full}"
             self.session_history.append(log_entry)
             print(f"📝 대화 메모리 기록 (현재 {len(self.session_history)}턴 쌓임)")
 
@@ -346,7 +347,8 @@ class PressToTalk:
                         next_prompt = build_next_prompt(
                             current_stage, next_stage, extracted_val,
                             self.temp_user_info.get("학년", ""),
-                            current_name
+                            current_name,
+                            self.temp_user_info
                         ) + emotion_hint
                         
                         resp = self.model.generate_content(next_prompt)
@@ -432,6 +434,43 @@ class PressToTalk:
         if not self.session_history: return
         print("💾 대화 세션 전환. 기억을 정리하여 저장합니다...")
         full_conversation_log = "\n".join(self.session_history)
+
+        # 텍스트 파일(.txt)로 대화 기록 영구 저장]
+        try:
+            safe_name = self.last_logged_in_user if self.last_logged_in_user else "Unknown"
+            log_filename = f"chat_log_{safe_name}.txt"
+            
+            # 1. 현재 접속한 유저의 최신 프로필 데이터를 DB에서 안전하게 꺼내옵니다.
+            user_profile = self.temp_user_info if self.temp_user_info else {}
+            display_keys = ["이름", "학년", "나이", "성별", "MBTI", "전공", "새새 인원"]
+            profile_items = [f"{k}: {user_profile[k]}" for k in display_keys if k in user_profile and user_profile[k]]
+            profile_str = " | ".join(profile_items) if profile_items else "프로필 정보 없음"
+            
+            session_end_time = datetime.now()
+            try:
+                # 첫 번째 대화 로그에서 시작 시간("[HH:MM:SS]")을 추출해서 계산합니다.
+                first_log = self.session_history[0]
+                start_time_str = first_log[1:9] # 시간 부분만 톡 잘라내기
+                session_start_time = datetime.strptime(start_time_str, "%H:%M:%S").replace(
+                    year=session_end_time.year, month=session_end_time.month, day=session_end_time.day
+                )
+                duration = session_end_time - session_start_time
+                duration_str = f"{duration.seconds // 60}분 {duration.seconds % 60}초"
+            except Exception:
+                duration_str = "계산 불가"
+
+            # 2. 파일에 프로필 -> 대화록 순서로 예쁘게 씁니다.
+            with open(log_filename, "a", encoding="utf-8") as f:
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"\n\n[{ts}] === 새로운 대화 세션 시작 ===\n")
+                f.write(f"👤 [사용자 프로필]: {profile_str}\n")  # <--- 프로필이 박히는 부분!
+                f.write("-----------------------------------------\n")
+                f.write(full_conversation_log + "\n")
+                f.write("=========================================\n")
+            print(f"📄 프로필 및 대화 전체 스크립트가 '{log_filename}' 파일에 안전하게 저장되었습니다!")
+        except Exception as e:
+            print(f"❌ 텍스트 저장 중 오류 발생: {e}")
+
         if hasattr(self.profile_manager, "batch_update_summary"):
             threading.Thread(target=self.profile_manager.batch_update_summary, args=(full_conversation_log,), daemon=True).start()
         self.session_history = []
