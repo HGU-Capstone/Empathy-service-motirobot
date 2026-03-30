@@ -16,6 +16,7 @@ from typing import Optional, Callable
 import multiprocessing
 
 from core.profile_manager import ProfileManager
+from core.report_manager import ReportManager
 from core.utils import (
     _get_relative_time_str, _extract_text, _get_env, 
     STAGES, build_opening_prompt, build_extract_prompt, 
@@ -73,9 +74,6 @@ class PressToTalk:
         self.temp_user_info = {}
         
         self.is_setting_up_main_chat = False 
-        # 🚨 [핵심 추가] 메인 대화 세팅 직후 찰나의 Unknown을 무시하기 위한 쿨다운 타임
-        self.main_chat_cooldown_until = 0 
-        # 🚨 [핵심 추가] 현재 세션에서 이미 메인 대화에 진입했다면, 도중에 잠깐 Unknown이 떠도 재인터뷰를 막음
         self.session_active = False 
 
         self.current_user_name = None
@@ -114,6 +112,8 @@ class PressToTalk:
 
         self.profile_manager = ProfileManager(self)
         self.profile_manager.init_db()
+        
+        self.report_manager = ReportManager(self.MODEL_NAME)
         
         if ENABLE_GREETING:
             self._speak_and_subtitle(GREETING_TEXT)
@@ -395,11 +395,9 @@ class PressToTalk:
                             
                         self.listening_enabled.set()
                         
-                        # 🚨 [핵심 보완] 인터뷰 성공적으로 끝났으므로 세션을 Active로 변경하고, 무적 시간을 5초 줍니다.
                         self.session_active = True
-                        self.main_chat_cooldown_until = time.time() + 5.0
                         self.is_setting_up_main_chat = False
-                        print("✅ 메인 대화 세팅 완벽 종료! 카메라 및 마이크 정상화. (5초 쿨다운 적용)")
+                        print("✅ 메인 대화 세팅 완벽 종료! [1:1 대화 고정 모드 활성화]")
 
             else:
                 current_time_str = datetime.now().strftime("%Y년 %m월 %d일 %p %I시 %M분")
@@ -427,16 +425,56 @@ class PressToTalk:
             if self.emotion_queue: self.emotion_queue.put("NEUTRAL")
             self.lower_busy_signal()
 
-
-    def _flush_session_history(self):
+    def _flush_session_history(self, is_shutdown=False):
         if not self.session_history: return
         print("💾 대화 세션 전환. 기억을 정리하여 저장합니다...")
         full_conversation_log = "\n".join(self.session_history)
+        
+        current_user = self.last_logged_in_user or self.shared_state.get('current_user_name', 'Unknown')
+        
+        vitals_data = None
+        # 🚨 [신규 추가] 프로그램 종료(ESC) 시 콘솔에서 수동으로 데이터를 입력받습니다.
+        if is_shutdown and current_user and current_user != "Unknown":
+            print("\n" + "="*60)
+            print(f"📊 [{current_user}]님의 상담 결과지 생성을 위한 추가 정보 입력")
+            print("============================================================")
+            try:
+                avg_hr = input("👉 사용자의 평균 심박수 (예: 81.5): ")
+                max_hr = input("👉 사용자의 최대 심박수 (예: 107.7): ")
+                stress = input("👉 stress_level (예: 측정불가, 높음 등): ")
+                mood = input("👉 mood_summary (예: 불안함, 데이터 부족 등): ")
+                
+                vitals_data = {
+                    "avg_hr": avg_hr.strip(),
+                    "max_hr": max_hr.strip(),
+                    "stress": stress.strip(),
+                    "mood": mood.strip()
+                }
+            except Exception as e:
+                print(f"입력 중 오류 발생: {e}")
+                vitals_data = None
+            print("============================================================\n")
+
+        threads = []
+        
+        if current_user and current_user != "Unknown":
+            t1 = threading.Thread(target=self.report_manager.generate_and_save_reports, args=(current_user, full_conversation_log, self.temp_user_info, vitals_data))
+            threads.append(t1)
+            t1.start()
+
         if hasattr(self.profile_manager, "batch_update_summary"):
-            threading.Thread(target=self.profile_manager.batch_update_summary, args=(full_conversation_log,), daemon=True).start()
+            t2 = threading.Thread(target=self.profile_manager.batch_update_summary, args=(full_conversation_log,))
+            threads.append(t2)
+            t2.start()
+
         self.session_history = []
-        # 대화 세션이 전환될 때 플래그 해제 (사람이 완전히 떠났을 때)
         self.session_active = False 
+        
+        if is_shutdown:
+            print("⏳ 백그라운드 데이터 저장(결과지 작성 및 기억 요약)을 기다립니다. 잠시만 대기해주세요...")
+            for t in threads:
+                t.join()
+            print("✅ 모든 데이터 저장이 안전하게 완료되었습니다.")
     
     def _quick_listen_for_yes_no(self, timeout=3.0) -> bool:
         print(f"👂 [Yes/No] {timeout}초간 답변 듣기 시작...")
@@ -484,6 +522,9 @@ class PressToTalk:
         while not self.stop_event.is_set():
             time.sleep(0.1)
 
+            if getattr(self, 'session_active', False):
+                continue
+
             if self.shared_state:
                 raw_name = self.shared_state.get('detected_user')
                 
@@ -506,17 +547,11 @@ class PressToTalk:
                     if not final_name or final_name in ["Thinking...", None]: continue 
                     detected_name = final_name
 
-                    # 🚨 [핵심 보완 1] 인터뷰 진행 중이거나, 세팅 중이거나, 세팅 직후 쿨다운 상태면 카메라 감지를 무시함
-                    if self.interview_stage_index >= 0 or self.is_setting_up_main_chat or time.time() < self.main_chat_cooldown_until:
+                    if self.interview_stage_index >= 0 or self.is_setting_up_main_chat:
                         continue
 
                     if detected_name != self.last_logged_in_user:
                         if detected_name == "Unknown":
-                            # 🚨 [핵심 보완 2] 이미 대화가 시작된(Session Active) 상태라면 잠깐 얼굴을 놓쳐도 다시 인터뷰하지 않음!
-                            if self.session_active:
-                                
-                                continue
-
                             print("🤖 새로운 Unknown 감지 -> 인터뷰 시작!")
                             self.raise_busy_signal()
                             
@@ -574,15 +609,12 @@ class PressToTalk:
                                 except: pass
                             self.listening_enabled.set()
                             
-                            # 🚨 아는 사람일 경우에도 세션을 활성화시키고 쿨다운 부여
                             self.session_active = True
-                            self.main_chat_cooldown_until = time.time() + 5.0
                             self.lower_busy_signal()
-                
-                # 사람이 화면에서 완전히 사라진 상태(None)가 지속될 경우 세션을 종료하는 로직 (기존 _flush_session_history 호출 트리거에 의존)
+                            print("✅ 아는 사람 세팅 완료! [1:1 대화 고정 모드 활성화]")
 
         print("PTT App 종료 절차 시작...")
-        self._flush_session_history()
+        self._flush_session_history(is_shutdown=True)
         self.listening_enabled.clear()
         
         self.stop_nodding_event.set()
