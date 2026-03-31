@@ -74,6 +74,7 @@ class PressToTalk:
         self.temp_user_info = {}
         
         self.is_setting_up_main_chat = False 
+        self.main_chat_cooldown_until = 0 # 🚨 [복구완료] 쿨다운 변수 복구
         self.session_active = False 
 
         self.current_user_name = None
@@ -395,9 +396,11 @@ class PressToTalk:
                             
                         self.listening_enabled.set()
                         
+                        # 🚨 [핵심 보완 복구 완료] 5초 쿨다운 적용 및 세션 활성화
                         self.session_active = True
+                        self.main_chat_cooldown_until = time.time() + 5.0
                         self.is_setting_up_main_chat = False
-                        print("✅ 메인 대화 세팅 완벽 종료! [1:1 대화 고정 모드 활성화]")
+                        print("✅ 메인 대화 세팅 완벽 종료! 카메라 및 마이크 정상화. (5초 쿨다운 적용)")
 
             else:
                 current_time_str = datetime.now().strftime("%Y년 %m월 %d일 %p %I시 %M분")
@@ -433,7 +436,7 @@ class PressToTalk:
         current_user = self.last_logged_in_user or self.shared_state.get('current_user_name', 'Unknown')
         
         vitals_data = None
-        # 🚨 [신규 추가] 프로그램 종료(ESC) 시 콘솔에서 수동으로 데이터를 입력받습니다.
+        # 🚨 [수동 입력 로직] 프로그램 종료(ESC) 시 콘솔에서 수동으로 데이터를 입력받습니다.
         if is_shutdown and current_user and current_user != "Unknown":
             print("\n" + "="*60)
             print(f"📊 [{current_user}]님의 상담 결과지 생성을 위한 추가 정보 입력")
@@ -522,9 +525,6 @@ class PressToTalk:
         while not self.stop_event.is_set():
             time.sleep(0.1)
 
-            if getattr(self, 'session_active', False):
-                continue
-
             if self.shared_state:
                 raw_name = self.shared_state.get('detected_user')
                 
@@ -547,11 +547,17 @@ class PressToTalk:
                     if not final_name or final_name in ["Thinking...", None]: continue 
                     detected_name = final_name
 
-                    if self.interview_stage_index >= 0 or self.is_setting_up_main_chat:
+                    # 🚨 [핵심 보완 1 복구완료] 인터뷰 진행 중이거나, 세팅 중이거나, 세팅 직후 쿨다운 상태면 카메라 감지를 무시함
+                    if self.interview_stage_index >= 0 or self.is_setting_up_main_chat or time.time() < self.main_chat_cooldown_until:
                         continue
 
                     if detected_name != self.last_logged_in_user:
                         if detected_name == "Unknown":
+                            # 🚨 [핵심 보완 2 복구완료] 이미 대화가 시작된(Session Active) 상태라면 잠깐 얼굴을 놓쳐도 다시 인터뷰하지 않음!
+                            if self.session_active:
+                                
+                                continue
+
                             print("🤖 새로운 Unknown 감지 -> 인터뷰 시작!")
                             self.raise_busy_signal()
                             
@@ -609,26 +615,41 @@ class PressToTalk:
                                 except: pass
                             self.listening_enabled.set()
                             
+                            # 🚨 [핵심 보완 복구 완료] 아는 사람일 경우에도 세션을 활성화시키고 쿨다운 부여
                             self.session_active = True
+                            self.main_chat_cooldown_until = time.time() + 5.0
                             self.lower_busy_signal()
                             print("✅ 아는 사람 세팅 완료! [1:1 대화 고정 모드 활성화]")
 
         print("PTT App 종료 절차 시작...")
-        self._flush_session_history(is_shutdown=True)
-        self.listening_enabled.clear()
         
+        # 🚨 [수정됨] 스레드부터 얌전히 닫아서 쓸데없는 로그 출력을 막습니다.
+        self.listening_enabled.clear()
         self.stop_nodding_event.set()
+        
         if self.nodding_thread and self.nodding_thread.is_alive():
             self.nodding_thread.join(timeout=0.5)
 
-        if self.current_listener and self.current_listener.is_alive(): self.current_listener.stop()
-        if self.mouth_listener_thread and self.mouth_listener_thread.is_alive(): self.mouth_listener_thread.join(timeout=1.0)
+        if self.current_listener and self.current_listener.is_alive(): 
+            self.current_listener.stop()
+            
+        if self.mouth_listener_thread and self.mouth_listener_thread.is_alive(): 
+            self.mouth_listener_thread.join(timeout=1.0)
+        
+        # 🚨 [수정됨] 주변 시스템(카메라, 모터)이 완전히 닫힐 수 있도록 1.5초 대기 후 수치 입력을 받습니다.
+        print("⏳ 시스템 종료 중... 수치 입력을 위해 화면을 정리합니다.")
+        time.sleep(1.5) 
+
+        # 이제 주변 스레드들이 조용해졌으므로 수동 입력 및 결과지 저장을 진행합니다.
+        self._flush_session_history(is_shutdown=True)
         
         try: self.profile_manager.save_profile_at_exit()
         except Exception as e: print(f"❌ 종료 요약 저장 중 치명적 오류: {e}")
 
         try:
-            if FAREWELL_TEXT: self.tts.speak(FAREWELL_TEXT)
-        finally:
-            self.tts.close_and_join(drain=True)
+            # 무한 대기 방지를 위해 drain=False 적용
+            self.tts.close_and_join(drain=False)
+        except Exception as e:
+            pass
+            
         print("PTT App 정상 종료")

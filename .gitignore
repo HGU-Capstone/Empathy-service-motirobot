@@ -34,3 +34,6 @@ logs/*
 # --- 사용자 기억 ---
 art_brain.pkl
 user_profiles.json
+
+user_result/
+.user_result/
