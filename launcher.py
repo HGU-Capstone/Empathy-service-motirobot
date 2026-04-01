@@ -182,7 +182,7 @@ def main():
             subtitle_q.put("__QUIT__")
         if subtitle_proc:
             subtitle_proc.join(timeout=3)
-        t_ptt.join(timeout=10.0)
+        t_ptt.join()
         t_visual_face.join(timeout=15.0)
         t_face.join(timeout=3.0)
         t_wheels.join(timeout=3.0)
