@@ -74,8 +74,9 @@ class PressToTalk:
         self.temp_user_info = {}
         
         self.is_setting_up_main_chat = False 
-        self.main_chat_cooldown_until = 0 # 🚨 [복구완료] 쿨다운 변수 복구
         self.session_active = False 
+
+        self.main_chat_cooldown_until = 0
 
         self.current_user_name = None
         self.profile_db_file = PROFILE_DB_FILE
@@ -152,15 +153,9 @@ class PressToTalk:
         speak_text_full = ""
         ts = datetime.now().strftime("%H:%M:%S")
 
-        is_terminating = False 
-
         for chunk in response_stream:
             if not chunk.text: continue
             buffer += chunk.text
-
-            if "[대화종료]" in buffer:
-                is_terminating = True
-                buffer = buffer.replace("[대화종료]", "")
 
             if not header_parsed:
                 if "[/EMOTION]" in buffer:
@@ -174,29 +169,24 @@ class PressToTalk:
                                 self.emotion_queue.put(extracted_emotion)
                             else:
                                 self.emotion_queue.put("NEUTRAL")
-                
+                    
                     buffer = buffer.split("[/EMOTION]")[-1].lstrip()
                     header_parsed = True
                 elif len(buffer) > 100: 
                     header_parsed = True
-
+            
             if header_parsed:
                 while any(t in buffer for t in terminators):
                     first_term_idx = min([buffer.find(t) for t in terminators if t in buffer])
                     sentence = buffer[:first_term_idx+1].strip()
                     buffer = buffer[first_term_idx+1:]
                     sentence = sentence.replace('*', '').strip()
-                
+                    
                     if sentence:
                         print(f"[{ts}] 🗣️ 말하기: {sentence}")
                         self.tts.speak(sentence)
                         if self.subtitle_queue: self.subtitle_queue.put(sentence)
                         speak_text_full += sentence + " "
-
-        if is_terminating:
-            print(f"\n[{ts}] 💡 모티가 훈훈하게 대화를 마무리했습니다. 작별 인사 중... 👋")
-            self.tts.wait()         # TTS가 큐에 쌓인 작별 인사를 끝까지 다 말할 때까지 기다려줍니다.
-            self.stop_event.set()   # 강제 종료(os._exit) 대신, ESC를 누른 것과 똑같은 '안전 종료' 신호를 보냅니다.
 
         if buffer.strip():
             sentence = buffer.replace('*', '').strip()
@@ -389,6 +379,60 @@ class PressToTalk:
                         time.sleep(10)
                         self.shared_state['force_learning'] = False
                         
+                        # ====================================================================
+                        # 🚨 [음성 인식 기반 - 데이터 자가 교정 무한 루프 추가]
+                        # ====================================================================
+                        while True:
+                            check_name = self.temp_user_info.get("이름", "알 수 없음")
+                            check_major = self.temp_user_info.get("전공", "알 수 없음")
+                            check_mbti = self.temp_user_info.get("MBTI", "알 수 없음")
+                            
+                            if self.emotion_queue: self.emotion_queue.put("HAPPY")
+                            summary_msg = f"얼굴 인식이 끝났어요! 제가 기억한 정보는 이름 {check_name}, {check_major} 전공, MBTI는 {check_mbti} 인데, 혹시 제가 맞게 기억했나요?"
+                            self._speak_and_subtitle(summary_msg)
+                            self.tts.wait()
+
+                            self.listening_enabled.clear()
+                            is_info_correct = self._quick_listen_for_yes_no(timeout=4.0)
+
+                            if is_info_correct:
+                                if self.emotion_queue: self.emotion_queue.put("HAPPY")
+                                self._speak_and_subtitle("다행이네요! 이 정보대로 완벽하게 기억해둘게요.")
+                                self.tts.wait()
+                                break  # 정보가 맞다면 루프 탈출
+                            else:
+                                if self.emotion_queue: self.emotion_queue.put("SURPRISED")
+                                self._speak_and_subtitle("아앗, 제가 잘못 알아들었나 봐요! 이름, 전공, MBTI 중 어느 부분이 틀리셨는지 알려주세요.")
+                                self.tts.wait()
+                                
+                                field_to_fix = self._listen_and_get_correction_field(timeout=4.0)
+                                
+                                if field_to_fix in ["이름", "전공", "MBTI"]:
+                                    if self.emotion_queue: self.emotion_queue.put("NEUTRAL")
+                                    self._speak_and_subtitle(f"그렇군요! 올바른 {field_to_fix} 정보를 다시 알려주세요.")
+                                    self.tts.wait()
+                                    
+                                    new_val = self._listen_and_get_new_value(field_to_fix, timeout=5.0)
+                                    if new_val:
+                                        self.temp_user_info[field_to_fix] = new_val
+                                        if self.emotion_queue: self.emotion_queue.put("HAPPY")
+                                        self._speak_and_subtitle(f"네, {new_val} 맞으시죠? 새롭게 수정했어요. 다시 한 번 확인해볼게요.")
+                                        self.tts.wait()
+                                    else:
+                                        if self.emotion_queue: self.emotion_queue.put("SAD")
+                                        self._speak_and_subtitle("제가 잘 듣지 못했어요. 처음부터 다시 확인해볼게요.")
+                                        self.tts.wait()
+                                else:
+                                    if self.emotion_queue: self.emotion_queue.put("SAD")
+                                    self._speak_and_subtitle("어떤 항목인지 잘 듣지 못했어요. 다시 한 번 확인해볼게요.")
+                                    self.tts.wait()
+
+                        # 루프를 무사히 통과했다면, 최종 이름 정보를 동기화합니다.
+                        final_name = self.temp_user_info.get("이름", "사용자")
+                        self.shared_state['current_user_name'] = final_name
+                        self.last_logged_in_user = final_name
+                        # ====================================================================
+
                         self.profile_manager.save_user_info(final_name, self.temp_user_info)
                         self.profile_manager.load_profile_for_chat(final_name)
                         
@@ -408,11 +452,10 @@ class PressToTalk:
                             
                         self.listening_enabled.set()
                         
-                        # 🚨 [핵심 보완 복구 완료] 5초 쿨다운 적용 및 세션 활성화
                         self.session_active = True
                         self.main_chat_cooldown_until = time.time() + 5.0
                         self.is_setting_up_main_chat = False
-                        print("✅ 메인 대화 세팅 완벽 종료! 카메라 및 마이크 정상화. (5초 쿨다운 적용)")
+                        print("✅ 메인 대화 세팅 완벽 종료! [1:1 대화 고정 모드 활성화]")
 
             else:
                 current_time_str = datetime.now().strftime("%Y년 %m월 %d일 %p %I시 %M분")
@@ -448,7 +491,6 @@ class PressToTalk:
         current_user = self.last_logged_in_user or self.shared_state.get('current_user_name', 'Unknown')
         
         vitals_data = None
-        # 🚨 [수동 입력 로직] 프로그램 종료(ESC) 시 콘솔에서 수동으로 데이터를 입력받습니다.
         if is_shutdown and current_user and current_user != "Unknown":
             print("\n" + "="*60)
             print(f"📊 [{current_user}]님의 상담 결과지 생성을 위한 추가 정보 입력")
@@ -502,8 +544,8 @@ class PressToTalk:
             b64 = base64.b64encode(wav_bytes).decode("ascii")
             prompt = (
                 "사용자의 오디오를 듣고 '긍정(Yes)'인지 '부정(No)'인지 판단하세요. "
-                "사용자가 '네', '응', '좋아', '그래', '어'라고 하면 긍정입니다. "
-                "사용자가 '아니', '아니요', '됐어', '싫어'라고 하거나 아무 말도 없으면 부정입니다. "
+                "사용자가 '네', '응', '맞아', '좋아', '그래', '어'라고 하면 긍정입니다. "
+                "사용자가 '아니', '틀렸어', '아니요', '됐어', '싫어'라고 하거나 아무 말도 없으면 부정입니다. "
                 "반드시 JSON으로만 출력하세요: {\"answer\": \"yes\"} 또는 {\"answer\": \"no\"}"
             )
             resp = self.model.generate_content([prompt, {"inline_data": {"mime_type": "audio/wav", "data": b64}}])
@@ -511,6 +553,51 @@ class PressToTalk:
             return '"yes"' in txt or "'yes'" in txt
         except Exception:
             return False 
+
+    # 🚨 [신규 함수 1] 수정하고 싶은 "항목"을 추출하는 함수
+    def _listen_and_get_correction_field(self, timeout=4.0) -> str:
+        print("👂 [수정 항목 파악] 듣기 시작...")
+        if self.emotion_queue: self.emotion_queue.put("LISTENING")
+        wav_bytes = self.audio.record_fixed_duration(timeout)
+        if not wav_bytes: return "none"
+            
+        if self.emotion_queue: self.emotion_queue.put("THINKING")
+        try:
+            b64 = base64.b64encode(wav_bytes).decode("ascii")
+            prompt = (
+                "사용자의 오디오를 듣고, 사용자가 '이름', '전공', 'MBTI' 중 어느 항목을 수정하고 싶어하는지 판단하세요. "
+                "반드시 JSON으로만 출력하세요: {\"field\": \"이름\"} 또는 {\"field\": \"전공\"} 또는 {\"field\": \"MBTI\"}. "
+                "명확하지 않거나 파악할 수 없다면 {\"field\": \"none\"} 으로 출력하세요."
+            )
+            resp = self.model.generate_content([prompt, {"inline_data": {"mime_type": "audio/wav", "data": b64}}])
+            txt = _extract_text(resp)
+            match = re.search(r'\{.*?\}', txt, re.DOTALL)
+            if match:
+                data = json.loads(match.group(0))
+                return data.get("field", "none")
+            return "none"
+        except Exception:
+            return "none"
+
+    # 🚨 [신규 함수 2] 새롭게 입력된 "값"을 추출하는 함수
+    def _listen_and_get_new_value(self, field_name: str, timeout=5.0) -> str:
+        print(f"👂 [새 {field_name} 값 파악] 듣기 시작...")
+        if self.emotion_queue: self.emotion_queue.put("LISTENING")
+        wav_bytes = self.audio.record_fixed_duration(timeout)
+        if not wav_bytes: return ""
+            
+        if self.emotion_queue: self.emotion_queue.put("THINKING")
+        try:
+            b64 = base64.b64encode(wav_bytes).decode("ascii")
+            prompt = (
+                f"사용자의 오디오를 듣고, 새로운 '{field_name}' 값을 추출하세요. "
+                "사용자의 인사말이나 조사, 불필요한 부연 설명 없이 오직 핵심 '값(단어)'만 딱 잘라서 텍스트로 출력하세요. "
+                "(예: 사용자가 '조형민이야' 또는 '내 이름은 조형민'이라고 하면 '조형민'만 출력)"
+            )
+            resp = self.model.generate_content([prompt, {"inline_data": {"mime_type": "audio/wav", "data": b64}}])
+            return _extract_text(resp).strip()
+        except Exception:
+            return ""
 
     def _on_press(self, key): pass
 
@@ -537,6 +624,9 @@ class PressToTalk:
         while not self.stop_event.is_set():
             time.sleep(0.1)
 
+            if getattr(self, 'session_active', False):
+                continue
+
             if self.shared_state:
                 raw_name = self.shared_state.get('detected_user')
                 
@@ -559,15 +649,13 @@ class PressToTalk:
                     if not final_name or final_name in ["Thinking...", None]: continue 
                     detected_name = final_name
 
-                    # 🚨 [핵심 보완 1 복구완료] 인터뷰 진행 중이거나, 세팅 중이거나, 세팅 직후 쿨다운 상태면 카메라 감지를 무시함
                     if self.interview_stage_index >= 0 or self.is_setting_up_main_chat or time.time() < self.main_chat_cooldown_until:
                         continue
 
                     if detected_name != self.last_logged_in_user:
                         if detected_name == "Unknown":
-                            # 🚨 [핵심 보완 2 복구완료] 이미 대화가 시작된(Session Active) 상태라면 잠깐 얼굴을 놓쳐도 다시 인터뷰하지 않음!
                             if self.session_active:
-                                
+                                #print("🛡️ [방어] 대화 도중 잠깐 Unknown 감지됨. 무시합니다.")
                                 continue
 
                             print("🤖 새로운 Unknown 감지 -> 인터뷰 시작!")
@@ -627,41 +715,27 @@ class PressToTalk:
                                 except: pass
                             self.listening_enabled.set()
                             
-                            # 🚨 [핵심 보완 복구 완료] 아는 사람일 경우에도 세션을 활성화시키고 쿨다운 부여
                             self.session_active = True
                             self.main_chat_cooldown_until = time.time() + 5.0
                             self.lower_busy_signal()
                             print("✅ 아는 사람 세팅 완료! [1:1 대화 고정 모드 활성화]")
 
         print("PTT App 종료 절차 시작...")
-        
-        # 🚨 [수정됨] 스레드부터 얌전히 닫아서 쓸데없는 로그 출력을 막습니다.
+        self._flush_session_history(is_shutdown=True)
         self.listening_enabled.clear()
-        self.stop_nodding_event.set()
         
+        self.stop_nodding_event.set()
         if self.nodding_thread and self.nodding_thread.is_alive():
             self.nodding_thread.join(timeout=0.5)
 
-        if self.current_listener and self.current_listener.is_alive(): 
-            self.current_listener.stop()
-            
-        if self.mouth_listener_thread and self.mouth_listener_thread.is_alive(): 
-            self.mouth_listener_thread.join(timeout=1.0)
-        
-        # 🚨 [수정됨] 주변 시스템(카메라, 모터)이 완전히 닫힐 수 있도록 1.5초 대기 후 수치 입력을 받습니다.
-        print("⏳ 시스템 종료 중... 수치 입력을 위해 화면을 정리합니다.")
-        time.sleep(1.5) 
-
-        # 이제 주변 스레드들이 조용해졌으므로 수동 입력 및 결과지 저장을 진행합니다.
-        self._flush_session_history(is_shutdown=True)
+        if self.current_listener and self.current_listener.is_alive(): self.current_listener.stop()
+        if self.mouth_listener_thread and self.mouth_listener_thread.is_alive(): self.mouth_listener_thread.join(timeout=1.0)
         
         try: self.profile_manager.save_profile_at_exit()
         except Exception as e: print(f"❌ 종료 요약 저장 중 치명적 오류: {e}")
 
         try:
-            # 무한 대기 방지를 위해 drain=False 적용
-            self.tts.close_and_join(drain=False)
-        except Exception as e:
-            pass
-            
+            if FAREWELL_TEXT: self.tts.speak(FAREWELL_TEXT)
+        finally:
+            self.tts.close_and_join(drain=True)
         print("PTT App 정상 종료")
