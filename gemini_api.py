@@ -152,9 +152,15 @@ class PressToTalk:
         speak_text_full = ""
         ts = datetime.now().strftime("%H:%M:%S")
 
+        is_terminating = False 
+
         for chunk in response_stream:
             if not chunk.text: continue
             buffer += chunk.text
+
+            if "[대화종료]" in buffer:
+                is_terminating = True
+                buffer = buffer.replace("[대화종료]", "")
 
             if not header_parsed:
                 if "[/EMOTION]" in buffer:
@@ -168,24 +174,29 @@ class PressToTalk:
                                 self.emotion_queue.put(extracted_emotion)
                             else:
                                 self.emotion_queue.put("NEUTRAL")
-                    
+                
                     buffer = buffer.split("[/EMOTION]")[-1].lstrip()
                     header_parsed = True
                 elif len(buffer) > 100: 
                     header_parsed = True
-            
+
             if header_parsed:
                 while any(t in buffer for t in terminators):
                     first_term_idx = min([buffer.find(t) for t in terminators if t in buffer])
                     sentence = buffer[:first_term_idx+1].strip()
                     buffer = buffer[first_term_idx+1:]
                     sentence = sentence.replace('*', '').strip()
-                    
+                
                     if sentence:
                         print(f"[{ts}] 🗣️ 말하기: {sentence}")
                         self.tts.speak(sentence)
                         if self.subtitle_queue: self.subtitle_queue.put(sentence)
                         speak_text_full += sentence + " "
+
+        if is_terminating:
+            print(f"\n[{ts}] 💡 모티가 훈훈하게 대화를 마무리했습니다. 작별 인사 중... 👋")
+            self.tts.wait()         # TTS가 큐에 쌓인 작별 인사를 끝까지 다 말할 때까지 기다려줍니다.
+            self.stop_event.set()   # 강제 종료(os._exit) 대신, ESC를 누른 것과 똑같은 '안전 종료' 신호를 보냅니다.
 
         if buffer.strip():
             sentence = buffer.replace('*', '').strip()
@@ -347,7 +358,8 @@ class PressToTalk:
                         next_prompt = build_next_prompt(
                             current_stage, next_stage, extracted_val,
                             self.temp_user_info.get("학년", ""),
-                            current_name
+                            current_name,
+                            self.temp_user_info
                         ) + emotion_hint
                         
                         resp = self.model.generate_content(next_prompt)
