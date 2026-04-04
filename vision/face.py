@@ -124,7 +124,7 @@ def face_tracker_worker(port: PortHandler, pkt: PacketHandler, lock: threading.L
     last_mouth_open_time = 0.0
     is_speaking_state = False
     MOUTH_OPEN_THRESHOLD = 0.08   
-    SPEAKING_TIMEOUT_SEC = 2.0 
+    SPEAKING_TIMEOUT_SEC = 3.0 
     
     prev_time = 0
 
