@@ -618,7 +618,7 @@ class PressToTalk:
             self.mouth_listener_thread.start()
 
         self.last_activity_time = time.time()
-        self.listening_enabled.set()
+        self.listening_enabled.clear()
         print("▶ 대화 세션을 시작합니다. (상시 대기 상태)")
 
         while not self.stop_event.is_set():
@@ -672,6 +672,12 @@ class PressToTalk:
                             
                             print(f"👉 [DEBUG] 첫 인사 응답: {raw_text}")
                             self._process_and_speak_gemini_response(raw_text)
+                            
+                            while not self.mouth_event_queue.empty():
+                                try: self.mouth_event_queue.get_nowait()
+                                except: pass
+                            self.listening_enabled.set()
+                            
                             self.lower_busy_signal()
                             
                         else:
