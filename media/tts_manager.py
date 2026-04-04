@@ -6,6 +6,7 @@ import threading
 import requests
 import numpy as np
 import sounddevice as sd
+import time
 
 from core.utils import _get_env
 
@@ -105,6 +106,7 @@ class TTSManager:
 
                         sd.play(audio, sr)
                         sd.wait()
+                        time.sleep(0.4)
                         print("✅ TTS done")
                     else: 
                         print(f"❌ Typecast 오류 {r.status_code}: {r.text[:200]}")
