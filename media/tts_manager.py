@@ -91,7 +91,7 @@ class TTSManager:
                     if emotion: payload["prompt"] = {"emotion_preset": emotion, "emotion_intensity": intensity}
                     if seed is not None: payload["seed"] = seed
                     
-                    r = requests.post(url, headers=headers, json=payload, timeout=60)
+                    r = requests.post(url, headers=headers, json=payload, timeout=30)
                     if r.status_code == 200:
                         data = r.content
                         with io.BytesIO(data) as buf:
